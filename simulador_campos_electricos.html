@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador interactivo de campos eléctricos</title>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#121a2b; --panel2:#182238; --text:#e9eefb; --muted:#9fb0cc;
+    --accent:#7dd3fc; --border:#2a3856; --pos:#ff615a; --neg:#4aa3ff; --good:#7ee787;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  body{overflow:hidden}
+  button,input,select{font:inherit}
+  button{background:#18233a;color:var(--text);border:1px solid var(--border);border-radius:9px;padding:8px 10px;cursor:pointer}
+  button:hover{background:#22304d}
+  button.active{outline:2px solid var(--accent);background:#17334b}
+  button.danger{border-color:#7a2b35}
+  .app{height:100%;display:grid;grid-template-rows:auto 1fr}
+  .topbar{
+    display:flex;gap:8px;align-items:center;padding:9px 12px;background:#0e1627;border-bottom:1px solid var(--border);
+    overflow-x:auto;white-space:nowrap
+  }
+  .title{font-weight:800;margin-right:10px;letter-spacing:.2px}
+  .spacer{flex:1}
+  .main{min-height:0;display:grid;grid-template-columns:1fr 340px}
+  .stage{position:relative;min-width:0;min-height:0;background:#070c16}
+  canvas{width:100%;height:100%;display:block}
+  .hud{
+    position:absolute;left:12px;bottom:12px;background:rgba(10,16,28,.86);border:1px solid var(--border);
+    border-radius:10px;padding:8px 10px;font-size:12px;color:#c8d4ea;backdrop-filter:blur(8px);pointer-events:none
+  }
+  .hud b{color:white}
+  .sidebar{overflow:auto;background:var(--panel);border-left:1px solid var(--border);padding:12px}
+  .card{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:10px}
+  .card h3{font-size:14px;margin:0 0 9px}
+  .small{font-size:12px;color:var(--muted);line-height:1.45}
+  .row{display:flex;align-items:center;gap:8px;margin:8px 0}
+  .row label{font-size:12px;color:#d5def0;min-width:90px}
+  .row input[type=range]{flex:1;min-width:0}
+  .val{font-variant-numeric:tabular-nums;color:#fff;font-size:12px;min-width:62px;text-align:right}
+  .checks{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .check{display:flex;align-items:center;gap:7px;font-size:12px;color:#dce5f5}
+  .sourceType{font-size:13px;color:#dce5f5;margin-bottom:8px}
+  .formula{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.6;color:#dbeafe}
+  .presets{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .kbd{border:1px solid #43516d;border-bottom-width:2px;border-radius:5px;padding:1px 5px;font-size:11px;color:#dce6f8}
+  .notice{border-left:3px solid var(--accent);padding-left:9px}
+  .separator{height:1px;background:var(--border);margin:10px 0}
+  @media (max-width: 950px){
+    body{overflow:auto}
+    .app{height:auto;min-height:100%;grid-template-rows:auto 68vh auto}
+    .main{display:contents}
+    .sidebar{border-left:0;border-top:1px solid var(--border)}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="title">⚡ Campo Eléctrico 2D</div>
+    <button data-mode="select" class="mode active">Seleccionar / mover</button>
+    <button data-mode="plus" class="mode">+ Carga</button>
+    <button data-mode="minus" class="mode">− Carga</button>
+    <button data-mode="line" class="mode">Distribución lineal</button>
+    <button data-mode="plane" class="mode">Distribución plana</button>
+    <button data-mode="particle" class="mode">Partícula de prueba</button>
+    <button data-mode="delete" class="mode danger">Eliminar</button>
+    <div class="spacer"></div>
+    <button id="pauseBtn">⏸ Pausar partículas</button>
+    <button id="resetBtn">Reiniciar</button>
+  </div>
+
+  <div class="main">
+    <div class="stage" id="stage">
+      <canvas id="fieldCanvas"></canvas>
+      <div class="hud" id="hud">
+        Mueve el cursor para medir <b>E</b> y <b>V</b>.
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="card">
+        <h3>Visualización</h3>
+        <div class="checks">
+          <label class="check"><input id="showVectors" type="checkbox" checked> Vectores E</label>
+          <label class="check"><input id="showLines" type="checkbox" checked> Líneas de campo</label>
+          <label class="check"><input id="showPotential" type="checkbox"> Potencial V</label>
+          <label class="check"><input id="showEquip" type="checkbox"> Equipotenciales</label>
+          <label class="check"><input id="showGrid" type="checkbox" checked> Grilla / ejes</label>
+          <label class="check"><input id="showParticles" type="checkbox" checked> Partículas</label>
+        </div>
+        <div class="row">
+          <label>Densidad vectores</label>
+          <input id="vectorDensity" type="range" min="12" max="34" value="23">
+          <span class="val" id="vectorDensityVal">23</span>
+        </div>
+        <div class="row">
+          <label>Líneas / fuente</label>
+          <input id="lineDensity" type="range" min="4" max="18" value="10">
+          <span class="val" id="lineDensityVal">10</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Objeto seleccionado</h3>
+        <div class="sourceType" id="selectedType">Ninguno</div>
+        <div id="sourceControls">
+          <div class="small">Selecciona una carga o distribución para editar sus parámetros.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Partículas de prueba</h3>
+        <div class="row">
+          <label>q/m</label>
+          <input id="qOverM" type="range" min="-3" max="3" step="0.1" value="1">
+          <span class="val" id="qOverMVal">1.0 C/kg</span>
+        </div>
+        <div class="row">
+          <label>Velocidad sim.</label>
+          <input id="timeScale" type="range" min="0.2" max="3" step="0.1" value="1">
+          <span class="val" id="timeScaleVal">1.0×</span>
+        </div>
+        <div class="row">
+          <button id="clearParticles">Borrar partículas</button>
+        </div>
+        <div class="small">Las partículas no modifican el campo. Se usa <b>a = (q/m)E</b>.</div>
+      </div>
+
+      <div class="card">
+        <h3>Configuraciones rápidas</h3>
+        <div class="presets">
+          <button data-preset="dipole">Dipolo</button>
+          <button data-preset="equal">Dos cargas +</button>
+          <button data-preset="linePair">Líneas ±</button>
+          <button data-preset="plates">Placas ±</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Modelo físico</h3>
+        <div class="formula">
+          E(r) = k Σ dq · R / |R|³<br>
+          V(r) = k Σ dq / |R|<br>
+          E = −∇V<br>
+          k = 8.9875517923×10⁹ N·m²/C²
+        </div>
+        <div class="separator"></div>
+        <div class="small notice">
+          Las cargas puntuales usan la ley de Coulomb directamente. Las distribuciones lineales y planas
+          se integran numéricamente como sumas de pequeños elementos <b>dq</b>. El dibujo muestra el
+          campo dentro del plano de visualización (corte 2D). Se enmascara una vecindad muy pequeña
+          alrededor de cada elemento para evitar la singularidad numérica en r = 0.
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Atajos y uso</h3>
+        <div class="small">
+          Arrastra cualquier fuente para moverla. Usa los deslizadores para cambiar posición y magnitud.
+          <span class="kbd">Supr</span> elimina el objeto seleccionado.
+          El mapa de potencial usa escala automática robusta; por eso los colores muestran estructura y signo,
+          no una escala fija entre configuraciones.
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const K = 8.9875517923e9;
+  const canvas = document.getElementById('fieldCanvas');
+  const stage = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const hud = document.getElementById('hud');
+  const sourceControls = document.getElementById('sourceControls');
+  const selectedType = document.getElementById('selectedType');
+
+  const ui = {
+    showVectors: document.getElementById('showVectors'),
+    showLines: document.getElementById('showLines'),
+    showPotential: document.getElementById('showPotential'),
+    showEquip: document.getElementById('showEquip'),
+    showGrid: document.getElementById('showGrid'),
+    showParticles: document.getElementById('showParticles'),
+    vectorDensity: document.getElementById('vectorDensity'),
+    lineDensity: document.getElementById('lineDensity'),
+    qOverM: document.getElementById('qOverM'),
+    timeScale: document.getElementById('timeScale'),
+    pauseBtn: document.getElementById('pauseBtn')
+  };
+
+  let W = 900, H = 600, DPR = 1;
+  let world = {xmin:-2.25,xmax:2.25,ymin:-1.5,ymax:1.5};
+  let mode = 'select';
+  let selectedId = null;
+  let drag = null;
+  let sources = [];
+  let particles = [];
+  let sourceSamples = [];
+  let sourceBounds = [];
+  let nextId = 1;
+  let fieldVectors = [];
+  let fieldLines = [];
+  let potentialGrid = null;
+  let potentialCanvas = document.createElement('canvas');
+  let dirtySamples = true, dirtyVectors = true, dirtyLines = true, dirtyPotential = true;
+  let paused = false;
+  let lastTime = performance.now();
+  let lastHeavy = 0;
+  let pointerWorld = null;
+
+  const clamp = (v,a,b) => Math.max(a, Math.min(b,v));
+  const fmt = (x, digits=2) => Number.isFinite(x) ? x.toFixed(digits) : '—';
+  const signColor = q => q >= 0 ? '#ff615a' : '#4aa3ff';
+
+  function resize(){
+    const r = stage.getBoundingClientRect();
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = Math.max(320, r.width);
+    H = Math.max(320, r.height);
+    canvas.width = Math.round(W*DPR);
+    canvas.height = Math.round(H*DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    const halfY = 1.5;
+    const halfX = halfY * (W/H);
+    world = {xmin:-halfX,xmax:halfX,ymin:-halfY,ymax:halfY};
+    markAllDirty();
+  }
+
+  function sx(x){ return (x-world.xmin)/(world.xmax-world.xmin)*W; }
+  function sy(y){ return H-(y-world.ymin)/(world.ymax-world.ymin)*H; }
+  function wx(px){ return world.xmin + px/W*(world.xmax-world.xmin); }
+  function wy(py){ return world.ymin + (H-py)/H*(world.ymax-world.ymin); }
+  function pxPerMeter(){ return W/(world.xmax-world.xmin); }
+
+  function markAllDirty(){
+    dirtySamples = dirtyVectors = dirtyLines = dirtyPotential = true;
+  }
+  function markGeometryDirty(){
+    dirtySamples = dirtyVectors = dirtyLines = dirtyPotential = true;
+  }
+
+  function addPoint(x,y,qNC){
+    const s = {id:nextId++, type:'point', x,y, q:qNC*1e-9};
+    sources.push(s); selectedId=s.id; markGeometryDirty(); updateControls(); return s;
+  }
+  function addLine(x,y,lambdaNCm=4){
+    const s = {id:nextId++, type:'line', x,y, lambda:lambdaNCm*1e-9, length:1.0, angle:0};
+    sources.push(s); selectedId=s.id; markGeometryDirty(); updateControls(); return s;
+  }
+  function addPlane(x,y,sigmaNCm2=4){
+    const s = {id:nextId++, type:'plane', x,y, sigma:sigmaNCm2*1e-9, width:1.0, height:0.6, angle:0};
+    sources.push(s); selectedId=s.id; markGeometryDirty(); updateControls(); return s;
+  }
+
+  function rebuildSamples(){
+    sourceSamples = [];
+    sourceBounds = [];
+    for(const s of sources){
+      if(s.type==='point'){
+        sourceSamples.push({x:s.x,y:s.y,q:s.q,parentId:s.id});
+        sourceBounds.push({id:s.id,type:s.type,x:s.x,y:s.y,r:0.055});
+      } else if(s.type==='line'){
+        const n = clamp(Math.ceil(s.length*24), 12, 56);
+        const c=Math.cos(s.angle), si=Math.sin(s.angle);
+        for(let i=0;i<n;i++){
+          const u=((i+0.5)/n-.5)*s.length;
+          sourceSamples.push({x:s.x+u*c,y:s.y+u*si,q:s.lambda*s.length/n,parentId:s.id});
+        }
+        sourceBounds.push({id:s.id,type:s.type});
+      } else if(s.type==='plane'){
+        const nx=12, ny=Math.max(6,Math.round(12*s.height/Math.max(s.width,0.05)));
+        const c=Math.cos(s.angle), si=Math.sin(s.angle);
+        const area=s.width*s.height;
+        for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){
+          const u=((i+0.5)/nx-.5)*s.width;
+          const v=((j+0.5)/ny-.5)*s.height;
+          const x=s.x+u*c-v*si, y=s.y+u*si+v*c;
+          sourceSamples.push({x,y,q:s.sigma*area/(nx*ny),parentId:s.id});
+        }
+        sourceBounds.push({id:s.id,type:s.type});
+      }
+    }
+    dirtySamples=false;
+  }
+
+  function EAt(x,y){
+    if(dirtySamples) rebuildSamples();
+    let ex=0, ey=0;
+    const minR2 = 0.018*0.018;
+    for(const a of sourceSamples){
+      const dx=x-a.x, dy=y-a.y, r2=dx*dx+dy*dy;
+      if(r2 < minR2) continue;
+      const invR3 = 1/(r2*Math.sqrt(r2));
+      const f = K*a.q*invR3;
+      ex += f*dx; ey += f*dy;
+    }
+    return {x:ex,y:ey,mag:Math.hypot(ex,ey)};
+  }
+
+  function VAt(x,y){
+    if(dirtySamples) rebuildSamples();
+    let v=0;
+    const minR = 0.018;
+    for(const a of sourceSamples){
+      const r=Math.hypot(x-a.x,y-a.y);
+      if(r < minR) continue;
+      v += K*a.q/r;
+    }
+    return v;
+  }
+
+  function computeVectors(){
+    if(!ui.showVectors.checked){ fieldVectors=[]; dirtyVectors=false; return; }
+    const nx=+ui.vectorDensity.value;
+    const ny=Math.max(8,Math.round(nx*H/W));
+    const vec=[];
+    let mags=[];
+    for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){
+      const x=world.xmin+(i+.5)/nx*(world.xmax-world.xmin);
+      const y=world.ymin+(j+.5)/ny*(world.ymax-world.ymin);
+      const e=EAt(x,y);
+      if(Number.isFinite(e.mag) && e.mag>1e-10){ vec.push({x,y,...e}); mags.push(e.mag); }
+    }
+    mags.sort((a,b)=>a-b);
+    const lo = Math.log10((mags[Math.floor(mags.length*.12)]||1)+1);
+    const hi = Math.log10((mags[Math.floor(mags.length*.88)]||10)+1);
+    for(const v of vec){
+      const t=clamp((Math.log10(v.mag+1)-lo)/(Math.max(.2,hi-lo)),0,1);
+      v.lenPx=6+20*t;
+    }
+    fieldVectors=vec; dirtyVectors=false;
+  }
+
+  function seedPointsForSource(s, density){
+    const pts=[];
+    if(s.type==='point'){
+      const r=.075;
+      for(let i=0;i<density;i++){
+        const a=2*Math.PI*i/density;
+        pts.push({x:s.x+r*Math.cos(a), y:s.y+r*Math.sin(a)});
+      }
+    }else if(s.type==='line'){
+      const c=Math.cos(s.angle), si=Math.sin(s.angle);
+      const nx=-si, ny=c;
+      const n=Math.max(3,Math.round(density/2));
+      for(let i=0;i<n;i++){
+        const u=((i+.5)/n-.5)*s.length;
+        const bx=s.x+u*c, by=s.y+u*si;
+        pts.push({x:bx+.055*nx,y:by+.055*ny});
+        pts.push({x:bx-.055*nx,y:by-.055*ny});
+      }
+    }else if(s.type==='plane'){
+      const c=Math.cos(s.angle), si=Math.sin(s.angle);
+      const n=Math.max(2,Math.round(density/4));
+      const localToWorld=(u,v)=>({x:s.x+u*c-v*si,y:s.y+u*si+v*c});
+      for(let i=0;i<n;i++){
+        const t=(i+.5)/n-.5;
+        pts.push(localToWorld(t*s.width, s.height/2+.045));
+        pts.push(localToWorld(t*s.width,-s.height/2-.045));
+        pts.push(localToWorld( s.width/2+.045,t*s.height));
+        pts.push(localToWorld(-s.width/2-.045,t*s.height));
+      }
+    }
+    return pts;
+  }
+
+  function sourceNetCharge(s){
+    if(s.type==='point') return s.q;
+    if(s.type==='line') return s.lambda*s.length;
+    return s.sigma*s.width*s.height;
+  }
+
+  function nearOppositeSource(x,y, sign){
+    for(const s of sources){
+      const qs=sourceNetCharge(s);
+      if(Math.sign(qs)===sign || qs===0) continue;
+      if(s.type==='point' && Math.hypot(x-s.x,y-s.y)<.07) return true;
+      if(s.type==='line'){
+        const c=Math.cos(s.angle), si=Math.sin(s.angle);
+        const ux=(x-s.x)*c+(y-s.y)*si;
+        const vy=-(x-s.x)*si+(y-s.y)*c;
+        if(Math.abs(vy)<.06 && Math.abs(ux)<s.length/2+.03) return true;
+      }
+      if(s.type==='plane'){
+        const c=Math.cos(s.angle), si=Math.sin(s.angle);
+        const ux=(x-s.x)*c+(y-s.y)*si;
+        const vy=-(x-s.x)*si+(y-s.y)*c;
+        if(Math.abs(ux)<s.width/2+.04 && Math.abs(vy)<s.height/2+.04) return true;
+      }
+    }
+    return false;
+  }
+
+  function traceLine(seed, outwardSign, sourceSign){
+    const pts=[seed];
+    let x=seed.x,y=seed.y;
+    const ds=.022;
+    for(let step=0;step<320;step++){
+      const e=EAt(x,y);
+      if(!Number.isFinite(e.mag) || e.mag<1e-8) break;
+      let dx=outwardSign*e.x/e.mag, dy=outwardSign*e.y/e.mag;
+      const mx=x+.5*ds*dx, my=y+.5*ds*dy;
+      const em=EAt(mx,my);
+      if(!Number.isFinite(em.mag)||em.mag<1e-8) break;
+      dx=outwardSign*em.x/em.mag; dy=outwardSign*em.y/em.mag;
+      x+=ds*dx; y+=ds*dy;
+      pts.push({x,y});
+      if(x<world.xmin-.05||x>world.xmax+.05||y<world.ymin-.05||y>world.ymax+.05) break;
+      if(step>8 && nearOppositeSource(x,y,sourceSign)) break;
+    }
+    return pts;
+  }
+
+  function computeFieldLines(){
+    if(!ui.showLines.checked){ fieldLines=[]; dirtyLines=false; return; }
+    const density=+ui.lineDensity.value;
+    const lines=[];
+    for(const s of sources){
+      const q=sourceNetCharge(s);
+      if(Math.abs(q)<1e-20) continue;
+      const sign=Math.sign(q);
+      const seeds=seedPointsForSource(s,density);
+      for(const seed of seeds){
+        const outwardSign = sign>0 ? 1 : -1;
+        const pts=traceLine(seed,outwardSign,sign);
+        if(pts.length>5) lines.push({pts,reverseArrow:sign<0});
+      }
+    }
+    fieldLines=lines; dirtyLines=false;
+  }
+
+  function computePotential(){
+    if(!(ui.showPotential.checked||ui.showEquip.checked)){
+      potentialGrid=null; dirtyPotential=false; return;
+    }
+    const cols=96, rows=Math.max(56,Math.round(cols*H/W));
+    const vals=new Float64Array(cols*rows);
+    const abs=[];
+    for(let j=0;j<rows;j++){
+      const y=world.ymax-j/(rows-1)*(world.ymax-world.ymin);
+      for(let i=0;i<cols;i++){
+        const x=world.xmin+i/(cols-1)*(world.xmax-world.xmin);
+        const v=VAt(x,y);
+        vals[j*cols+i]=v;
+        if(Number.isFinite(v)) abs.push(Math.abs(v));
+      }
+    }
+    abs.sort((a,b)=>a-b);
+    const scale=Math.max(1e-9, abs[Math.floor(abs.length*.90)]||1);
+    potentialGrid={cols,rows,vals,scale};
+
+    potentialCanvas.width=cols; potentialCanvas.height=rows;
+    const pctx=potentialCanvas.getContext('2d');
+    const img=pctx.createImageData(cols,rows);
+    for(let n=0;n<vals.length;n++){
+      const z=Math.tanh(vals[n]/scale);
+      let r,g,b;
+      if(z>=0){
+        r=50+205*z; g=48+65*(1-z); b=65+35*(1-z);
+      }else{
+        const t=-z; r=42+35*(1-t); g=68+95*(1-t); b=90+165*t;
+      }
+      img.data[n*4]=clamp(r,0,255);
+      img.data[n*4+1]=clamp(g,0,255);
+      img.data[n*4+2]=clamp(b,0,255);
+      img.data[n*4+3]=220;
+    }
+    pctx.putImageData(img,0,0);
+    dirtyPotential=false;
+  }
+
+  function drawGrid(){
+    if(!ui.showGrid.checked) return;
+    ctx.save();
+    ctx.lineWidth=1;
+    ctx.strokeStyle='rgba(140,160,195,.13)';
+    const step=.25;
+    for(let x=Math.ceil(world.xmin/step)*step;x<=world.xmax;x+=step){
+      ctx.beginPath();ctx.moveTo(sx(x),0);ctx.lineTo(sx(x),H);ctx.stroke();
+    }
+    for(let y=Math.ceil(world.ymin/step)*step;y<=world.ymax;y+=step){
+      ctx.beginPath();ctx.moveTo(0,sy(y));ctx.lineTo(W,sy(y));ctx.stroke();
+    }
+    ctx.strokeStyle='rgba(210,225,245,.35)';
+    ctx.beginPath();ctx.moveTo(0,sy(0));ctx.lineTo(W,sy(0));ctx.stroke();
+    ctx.beginPath();ctx.moveTo(sx(0),0);ctx.lineTo(sx(0),H);ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawPotential(){
+    if(ui.showPotential.checked && potentialGrid){
+      ctx.save();
+      ctx.imageSmoothingEnabled=true;
+      ctx.globalAlpha=.78;
+      ctx.drawImage(potentialCanvas,0,0,W,H);
+      ctx.restore();
+      ctx.save();
+      ctx.fillStyle='rgba(10,15,27,.72)';
+      ctx.fillRect(12,12,162,24);
+      ctx.fillStyle='#dbeafe';ctx.font='12px system-ui';
+      ctx.fillText(`Escala color: ±${potentialGrid.scale.toExponential(2)} V`,20,28);
+      ctx.restore();
+    }
+  }
+
+  function interpEdge(x1,y1,v1,x2,y2,v2,level){
+    const d=v2-v1;
+    const t=Math.abs(d)<1e-30?.5:clamp((level-v1)/d,0,1);
+    return {x:x1+t*(x2-x1),y:y1+t*(y2-y1)};
+  }
+
+  function drawEquipotentials(){
+    if(!ui.showEquip.checked || !potentialGrid) return;
+    const {cols,rows,vals,scale}=potentialGrid;
+    const levels=[-.8,-.6,-.4,-.2,0,.2,.4,.6,.8].map(x=>x*scale);
+    ctx.save();
+    ctx.lineWidth=1.05;
+    ctx.setLineDash([4,4]);
+    ctx.strokeStyle='rgba(255,255,255,.62)';
+    for(const level of levels){
+      ctx.beginPath();
+      for(let j=0;j<rows-1;j++) for(let i=0;i<cols-1;i++){
+        const idx=j*cols+i;
+        const v0=vals[idx],v1=vals[idx+1],v2=vals[idx+1+cols],v3=vals[idx+cols];
+        const x0=i/(cols-1)*W, x1=(i+1)/(cols-1)*W;
+        const y0=j/(rows-1)*H, y1=(j+1)/(rows-1)*H;
+        const pts=[];
+        if((v0-level)*(v1-level)<0) pts.push(interpEdge(x0,y0,v0,x1,y0,v1,level));
+        if((v1-level)*(v2-level)<0) pts.push(interpEdge(x1,y0,v1,x1,y1,v2,level));
+        if((v2-level)*(v3-level)<0) pts.push(interpEdge(x1,y1,v2,x0,y1,v3,level));
+        if((v3-level)*(v0-level)<0) pts.push(interpEdge(x0,y1,v3,x0,y0,v0,level));
+        if(pts.length===2){
+          ctx.moveTo(pts[0].x,pts[0].y);ctx.lineTo(pts[1].x,pts[1].y);
+        }else if(pts.length===4){
+          ctx.moveTo(pts[0].x,pts[0].y);ctx.lineTo(pts[1].x,pts[1].y);
+          ctx.moveTo(pts[2].x,pts[2].y);ctx.lineTo(pts[3].x,pts[3].y);
+        }
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function arrowHead(x,y,dx,dy,size=5,fill='rgba(214,233,255,.82)'){
+    const ang=Math.atan2(dy,dx);
+    ctx.save();ctx.translate(x,y);ctx.rotate(ang);
+    ctx.fillStyle=fill;ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(-size,-size*.55);ctx.lineTo(-size,size*.55);ctx.closePath();ctx.fill();ctx.restore();
+  }
+
+  function drawFieldLines(){
+    if(!ui.showLines.checked) return;
+    ctx.save();
+    ctx.strokeStyle='rgba(210,230,255,.55)';
+    ctx.lineWidth=1.1;
+    for(const L of fieldLines){
+      const pts=L.pts;
+      ctx.beginPath();
+      ctx.moveTo(sx(pts[0].x),sy(pts[0].y));
+      for(let i=1;i<pts.length;i++) ctx.lineTo(sx(pts[i].x),sy(pts[i].y));
+      ctx.stroke();
+      const idx=Math.max(2,Math.min(pts.length-2,Math.floor(pts.length*.55)));
+      const a=L.reverseArrow?pts[idx+1]:pts[idx-1];
+      const b=L.reverseArrow?pts[idx-1]:pts[idx+1];
+      arrowHead(sx(pts[idx].x),sy(pts[idx].y),sx(b.x)-sx(a.x),sy(b.y)-sy(a.y),5);
+    }
+    ctx.restore();
+  }
+
+  function drawVectors(){
+    if(!ui.showVectors.checked) return;
+    ctx.save();
+    ctx.lineWidth=1.15;
+    ctx.strokeStyle='rgba(125,211,252,.78)';
+    for(const v of fieldVectors){
+      const px=sx(v.x), py=sy(v.y);
+      const ux=v.x?0:0;
+      const norm=Math.hypot(v.x===undefined?0:v.x, v.y===undefined?0:v.y);
+      const emag=Math.hypot(v.x*0+v.mag,0); // keep v.mag explicit
+      if(emag<=0) continue;
+      const ex=v.x===undefined?0:v.x;
+      // E components were spread into keys x/y, so positions need dedicated names below.
+    }
+    ctx.restore();
+  }
+
+  // Recompute vectors with unambiguous names (position vs E components).
+  function computeVectorsSafe(){
+    if(!ui.showVectors.checked){ fieldVectors=[]; dirtyVectors=false; return; }
+    const nx=+ui.vectorDensity.value;
+    const ny=Math.max(8,Math.round(nx*H/W));
+    const vec=[]; const mags=[];
+    for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){
+      const pxw=world.xmin+(i+.5)/nx*(world.xmax-world.xmin);
+      const pyw=world.ymin+(j+.5)/ny*(world.ymax-world.ymin);
+      const e=EAt(pxw,pyw);
+      if(Number.isFinite(e.mag)&&e.mag>1e-10){vec.push({pxw,pyw,ex:e.x,ey:e.y,mag:e.mag});mags.push(e.mag);}
+    }
+    mags.sort((a,b)=>a-b);
+    const lo=Math.log10((mags[Math.floor(mags.length*.12)]||1)+1);
+    const hi=Math.log10((mags[Math.floor(mags.length*.88)]||10)+1);
+    for(const v of vec){
+      const t=clamp((Math.log10(v.mag+1)-lo)/(Math.max(.2,hi-lo)),0,1);
+      v.lenPx=6+20*t;
+    }
+    fieldVectors=vec;dirtyVectors=false;
+  }
+
+  function drawVectorsSafe(){
+    if(!ui.showVectors.checked) return;
+    ctx.save();
+    ctx.lineWidth=1.15;ctx.strokeStyle='rgba(125,211,252,.82)';
+    for(const v of fieldVectors){
+      const px=sx(v.pxw),py=sy(v.pyw);
+      const ux=v.ex/v.mag, uy=v.ey/v.mag;
+      const dx=v.lenPx*ux, dy=-v.lenPx*uy;
+      ctx.beginPath();ctx.moveTo(px-dx*.35,py-dy*.35);ctx.lineTo(px+dx*.65,py+dy*.65);ctx.stroke();
+      arrowHead(px+dx*.65,py+dy*.65,dx,dy,4,'rgba(125,211,252,.9)');
+    }
+    ctx.restore();
+  }
+
+  function drawSource(s){
+    const selected=s.id===selectedId;
+    const color=signColor(sourceNetCharge(s));
+    ctx.save();
+    if(s.type==='point'){
+      const x=sx(s.x),y=sy(s.y),r=13;
+      ctx.shadowColor=color;ctx.shadowBlur=selected?18:9;
+      ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+      ctx.shadowBlur=0;ctx.strokeStyle=selected?'#fff':'rgba(255,255,255,.45)';ctx.lineWidth=selected?2.5:1;ctx.stroke();
+      ctx.fillStyle='#fff';ctx.font='bold 17px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(s.q>=0?'+':'−',x,y-1);
+      ctx.font='11px system-ui';ctx.fillStyle='#e8eefb';ctx.fillText(`${(s.q/1e-9).toFixed(1)} nC`,x,y+25);
+    } else if(s.type==='line'){
+      const c=Math.cos(s.angle),si=Math.sin(s.angle),h=s.length/2;
+      const a={x:s.x-h*c,y:s.y-h*si},b={x:s.x+h*c,y:s.y+h*si};
+      ctx.strokeStyle=color;ctx.lineWidth=7;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(sx(a.x),sy(a.y));ctx.lineTo(sx(b.x),sy(b.y));ctx.stroke();
+      ctx.strokeStyle=selected?'#fff':'rgba(255,255,255,.35)';ctx.lineWidth=selected?2:1;ctx.beginPath();ctx.moveTo(sx(a.x),sy(a.y));ctx.lineTo(sx(b.x),sy(b.y));ctx.stroke();
+      ctx.fillStyle='#e8eefb';ctx.font='11px system-ui';ctx.textAlign='center';ctx.fillText(`λ ${(s.lambda/1e-9).toFixed(1)} nC/m`,sx(s.x),sy(s.y)-13);
+    } else {
+      const c=Math.cos(s.angle),si=Math.sin(s.angle);
+      const corners=[[-.5,-.5],[.5,-.5],[.5,.5],[-.5,.5]].map(([u,v])=>{
+        u*=s.width;v*=s.height;return {x:s.x+u*c-v*si,y:s.y+u*si+v*c};
+      });
+      ctx.fillStyle=color+'44';ctx.strokeStyle=color;ctx.lineWidth=selected?3:2;
+      ctx.beginPath();ctx.moveTo(sx(corners[0].x),sy(corners[0].y));
+      for(let i=1;i<4;i++)ctx.lineTo(sx(corners[i].x),sy(corners[i].y));ctx.closePath();ctx.fill();ctx.stroke();
+      ctx.save();ctx.clip();
+      ctx.strokeStyle=color+'88';ctx.lineWidth=1;
+      const minx=Math.min(...corners.map(p=>sx(p.x))),maxx=Math.max(...corners.map(p=>sx(p.x)));
+      const miny=Math.min(...corners.map(p=>sy(p.y))),maxy=Math.max(...corners.map(p=>sy(p.y)));
+      for(let t=minx-maxy;t<maxx+maxy;t+=12){ctx.beginPath();ctx.moveTo(t,miny);ctx.lineTo(t+(maxy-miny),maxy);ctx.stroke();}
+      ctx.restore();
+      ctx.fillStyle='#e8eefb';ctx.font='11px system-ui';ctx.textAlign='center';ctx.fillText(`σ ${(s.sigma/1e-9).toFixed(1)} nC/m²`,sx(s.x),sy(s.y));
+    }
+    ctx.restore();
+  }
+
+  function drawParticles(){
+    if(!ui.showParticles.checked) return;
+    ctx.save();
+    for(const p of particles){
+      if(p.trail.length>1){
+        ctx.strokeStyle='rgba(126,231,135,.35)';ctx.lineWidth=1.2;ctx.beginPath();
+        ctx.moveTo(sx(p.trail[0].x),sy(p.trail[0].y));
+        for(let i=1;i<p.trail.length;i++)ctx.lineTo(sx(p.trail[i].x),sy(p.trail[i].y));ctx.stroke();
+      }
+      ctx.fillStyle='#7ee787';ctx.beginPath();ctx.arc(sx(p.x),sy(p.y),4,0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function updateParticles(dtReal){
+    if(paused || !ui.showParticles.checked) return;
+    const qom=+ui.qOverM.value;
+    const dt=Math.min(.004,dtReal/1000*.12)*+ui.timeScale.value;
+    if(dt<=0) return;
+    for(const p of particles){
+      const e=EAt(p.x,p.y);
+      let ex=e.x,ey=e.y;
+      const cap=1400;
+      if(e.mag>cap){ex*=cap/e.mag;ey*=cap/e.mag;}
+      p.vx += qom*ex*dt; p.vy += qom*ey*dt;
+      const speed=Math.hypot(p.vx,p.vy), vmax=7;
+      if(speed>vmax){p.vx*=vmax/speed;p.vy*=vmax/speed;}
+      p.x += p.vx*dt; p.y += p.vy*dt;
+      if(!p.trail.length || Math.hypot(p.x-p.trail[p.trail.length-1].x,p.y-p.trail[p.trail.length-1].y)>.01){
+        p.trail.push({x:p.x,y:p.y});if(p.trail.length>170)p.trail.shift();
+      }
+    }
+    particles=particles.filter(p=>p.x>world.xmin-.2&&p.x<world.xmax+.2&&p.y>world.ymin-.2&&p.y<world.ymax+.2);
+  }
+
+  function maybeRecompute(now){
+    if(dirtySamples) rebuildSamples();
+    if(dirtyVectors) computeVectorsSafe();
+    if(now-lastHeavy>65){
+      if(dirtyLines) computeFieldLines();
+      if(dirtyPotential) computePotential();
+      lastHeavy=now;
+    }
+  }
+
+  function render(now){
+    const dt=now-lastTime;lastTime=now;
+    updateParticles(dt);
+    maybeRecompute(now);
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#070c16';ctx.fillRect(0,0,W,H);
+    drawPotential();drawGrid();drawEquipotentials();drawFieldLines();drawVectorsSafe();
+    for(const s of sources) drawSource(s);
+    drawParticles();
+    requestAnimationFrame(render);
+  }
+
+  function mousePos(ev){
+    const r=canvas.getBoundingClientRect();
+    return {px:ev.clientX-r.left,py:ev.clientY-r.top};
+  }
+
+  function hitTest(px,py){
+    for(let idx=sources.length-1;idx>=0;idx--){
+      const s=sources[idx];
+      if(s.type==='point'){
+        if(Math.hypot(px-sx(s.x),py-sy(s.y))<18) return s;
+      } else if(s.type==='line'){
+        const c=Math.cos(s.angle),si=Math.sin(s.angle),h=s.length/2;
+        const ax=sx(s.x-h*c),ay=sy(s.y-h*si),bx=sx(s.x+h*c),by=sy(s.y+h*si);
+        const vx=bx-ax,vy=by-ay,wx=px-ax,wy=py-ay;
+        const t=clamp((wx*vx+wy*vy)/(vx*vx+vy*vy),0,1);
+        if(Math.hypot(px-(ax+t*vx),py-(ay+t*vy))<12)return s;
+      } else {
+        const x=wx(px),y=wy(py),c=Math.cos(s.angle),si=Math.sin(s.angle);
+        const u=(x-s.x)*c+(y-s.y)*si,v=-(x-s.x)*si+(y-s.y)*c;
+        if(Math.abs(u)<=s.width/2&&Math.abs(v)<=s.height/2)return s;
+      }
+    }
+    return null;
+  }
+
+  canvas.addEventListener('pointerdown', ev=>{
+    canvas.setPointerCapture(ev.pointerId);
+    const m=mousePos(ev), x=wx(m.px),y=wy(m.py);
+    const hit=hitTest(m.px,m.py);
+    if(mode==='select'){
+      selectedId=hit?hit.id:null;updateControls();
+      if(hit) drag={id:hit.id,dx:x-hit.x,dy:y-hit.y};
+    } else if(mode==='plus'){addPoint(x,y,2);}
+      else if(mode==='minus'){addPoint(x,y,-2);}
+      else if(mode==='line'){addLine(x,y,4);}
+      else if(mode==='plane'){addPlane(x,y,4);}
+      else if(mode==='particle'){
+        particles.push({x,y,vx:0,vy:0,trail:[{x,y}]});
+      } else if(mode==='delete'&&hit){
+        sources=sources.filter(s=>s.id!==hit.id);if(selectedId===hit.id)selectedId=null;markGeometryDirty();updateControls();
+      }
+  });
+
+  canvas.addEventListener('pointermove', ev=>{
+    const m=mousePos(ev),x=wx(m.px),y=wy(m.py);pointerWorld={x,y};
+    const e=EAt(x,y),v=VAt(x,y);
+    hud.innerHTML=`x=${fmt(x,3)} m, y=${fmt(y,3)} m &nbsp; | &nbsp; <b>|E|=${e.mag.toExponential(3)} N/C</b> &nbsp; Eₓ=${e.x.toExponential(2)}, Eᵧ=${e.y.toExponential(2)} &nbsp; | &nbsp; <b>V=${v.toExponential(3)} V</b>`;
+    if(drag){
+      const s=sources.find(s=>s.id===drag.id);
+      if(s){s.x=x-drag.dx;s.y=y-drag.dy;markGeometryDirty();syncControlValues(s);}
+    }
+  });
+  canvas.addEventListener('pointerup',()=>drag=null);
+  canvas.addEventListener('pointercancel',()=>drag=null);
+  canvas.addEventListener('mouseleave',()=>{if(!drag)hud.innerHTML='Mueve el cursor para medir <b>E</b> y <b>V</b>.';});
+
+  document.querySelectorAll('.mode').forEach(btn=>btn.addEventListener('click',()=>{
+    mode=btn.dataset.mode;
+    document.querySelectorAll('.mode').forEach(b=>b.classList.toggle('active',b===btn));
+  }));
+
+  function sliderRow(label,prop,min,max,step,value,fmtFn){
+    return `<div class="row"><label>${label}</label><input type="range" data-prop="${prop}" min="${min}" max="${max}" step="${step}" value="${value}"><span class="val" data-val="${prop}">${fmtFn(value)}</span></div>`;
+  }
+
+  function updateControls(){
+    const s=sources.find(s=>s.id===selectedId);
+    if(!s){
+      selectedType.textContent='Ninguno';
+      sourceControls.innerHTML='<div class="small">Selecciona una carga o distribución para editar sus parámetros.</div>';
+      return;
+    }
+    const tname=s.type==='point'?'Carga puntual':s.type==='line'?'Distribución lineal':'Distribución plana';
+    selectedType.textContent=`${tname} #${s.id}`;
+    let html='';
+    html+=sliderRow('x','x',-3,3,.01,s.x,v=>`${(+v).toFixed(2)} m`);
+    html+=sliderRow('y','y',-1.5,1.5,.01,s.y,v=>`${(+v).toFixed(2)} m`);
+    if(s.type==='point'){
+      html+=sliderRow('q','qNC',-10,10,.1,s.q/1e-9,v=>`${(+v).toFixed(1)} nC`);
+    }else if(s.type==='line'){
+      html+=sliderRow('λ','lambdaNCm',-12,12,.1,s.lambda/1e-9,v=>`${(+v).toFixed(1)} nC/m`);
+      html+=sliderRow('Longitud','length',.2,2.5,.02,s.length,v=>`${(+v).toFixed(2)} m`);
+      html+=sliderRow('Ángulo','angleDeg',-180,180,1,s.angle*180/Math.PI,v=>`${Math.round(v)}°`);
+    }else{
+      html+=sliderRow('σ','sigmaNCm2',-15,15,.1,s.sigma/1e-9,v=>`${(+v).toFixed(1)} nC/m²`);
+      html+=sliderRow('Ancho','width',.2,2.3,.02,s.width,v=>`${(+v).toFixed(2)} m`);
+      html+=sliderRow('Alto','height',.15,1.5,.02,s.height,v=>`${(+v).toFixed(2)} m`);
+      html+=sliderRow('Ángulo','angleDeg',-180,180,1,s.angle*180/Math.PI,v=>`${Math.round(v)}°`);
+    }
+    html+='<div class="row"><button id="deleteSelected" class="danger">Eliminar seleccionado</button></div>';
+    sourceControls.innerHTML=html;
+    sourceControls.querySelectorAll('input[data-prop]').forEach(inp=>inp.addEventListener('input',()=>{
+      const prop=inp.dataset.prop,v=+inp.value;
+      if(prop==='qNC')s.q=v*1e-9;
+      else if(prop==='lambdaNCm')s.lambda=v*1e-9;
+      else if(prop==='sigmaNCm2')s.sigma=v*1e-9;
+      else if(prop==='angleDeg')s.angle=v*Math.PI/180;
+      else s[prop]=v;
+      markGeometryDirty();syncControlValues(s);
+    }));
+    document.getElementById('deleteSelected').addEventListener('click',()=>{
+      sources=sources.filter(x=>x.id!==selectedId);selectedId=null;markGeometryDirty();updateControls();
+    });
+  }
+
+  function syncControlValues(s){
+    const set=(prop,val,text)=>{
+      const input=sourceControls.querySelector(`input[data-prop="${prop}"]`);
+      const span=sourceControls.querySelector(`[data-val="${prop}"]`);
+      if(input)input.value=val;if(span)span.textContent=text;
+    };
+    set('x',s.x,`${s.x.toFixed(2)} m`);set('y',s.y,`${s.y.toFixed(2)} m`);
+    if(s.type==='point')set('qNC',s.q/1e-9,`${(s.q/1e-9).toFixed(1)} nC`);
+    if(s.type==='line'){
+      set('lambdaNCm',s.lambda/1e-9,`${(s.lambda/1e-9).toFixed(1)} nC/m`);
+      set('length',s.length,`${s.length.toFixed(2)} m`);
+      set('angleDeg',s.angle*180/Math.PI,`${Math.round(s.angle*180/Math.PI)}°`);
+    }
+    if(s.type==='plane'){
+      set('sigmaNCm2',s.sigma/1e-9,`${(s.sigma/1e-9).toFixed(1)} nC/m²`);
+      set('width',s.width,`${s.width.toFixed(2)} m`);set('height',s.height,`${s.height.toFixed(2)} m`);
+      set('angleDeg',s.angle*180/Math.PI,`${Math.round(s.angle*180/Math.PI)}°`);
+    }
+  }
+
+  function loadPreset(name){
+    sources=[];particles=[];selectedId=null;
+    if(name==='dipole'){addPoint(-.55,0,3);addPoint(.55,0,-3);}
+    if(name==='equal'){addPoint(-.55,0,3);addPoint(.55,0,3);}
+    if(name==='linePair'){
+      let a=addLine(-.55,0,5);a.angle=Math.PI/2;a.length=1.6;
+      let b=addLine(.55,0,-5);b.angle=Math.PI/2;b.length=1.6;
+    }
+    if(name==='plates'){
+      let a=addPlane(-.55,0,5);a.width=.28;a.height=1.65;
+      let b=addPlane(.55,0,-5);b.width=.28;b.height=1.65;
+    }
+    selectedId=null;markGeometryDirty();updateControls();
+  }
+
+  document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>loadPreset(b.dataset.preset)));
+
+  document.getElementById('resetBtn').addEventListener('click',()=>loadPreset('dipole'));
+  document.getElementById('clearParticles').addEventListener('click',()=>particles=[]);
+  ui.pauseBtn.addEventListener('click',()=>{
+    paused=!paused;ui.pauseBtn.textContent=paused?'▶ Reanudar partículas':'⏸ Pausar partículas';
+  });
+
+  ['showVectors','showLines','showPotential','showEquip','showGrid'].forEach(k=>{
+    ui[k].addEventListener('change',()=>{
+      if(k==='showVectors')dirtyVectors=true;
+      if(k==='showLines')dirtyLines=true;
+      if(k==='showPotential'||k==='showEquip')dirtyPotential=true;
+    });
+  });
+  ui.vectorDensity.addEventListener('input',()=>{
+    document.getElementById('vectorDensityVal').textContent=ui.vectorDensity.value;dirtyVectors=true;
+  });
+  ui.lineDensity.addEventListener('input',()=>{
+    document.getElementById('lineDensityVal').textContent=ui.lineDensity.value;dirtyLines=true;
+  });
+  ui.qOverM.addEventListener('input',()=>document.getElementById('qOverMVal').textContent=`${(+ui.qOverM.value).toFixed(1)} C/kg`);
+  ui.timeScale.addEventListener('input',()=>document.getElementById('timeScaleVal').textContent=`${(+ui.timeScale.value).toFixed(1)}×`);
+
+  window.addEventListener('keydown',ev=>{
+    if((ev.key==='Delete'||ev.key==='Backspace')&&selectedId!==null){
+      sources=sources.filter(s=>s.id!==selectedId);selectedId=null;markGeometryDirty();updateControls();
+    }
+  });
+
+  new ResizeObserver(resize).observe(stage);
+  loadPreset('dipole');
+  resize();
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
