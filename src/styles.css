@@ -225,6 +225,18 @@ canvas {
   background: var(--border);
 }
 
+.projectLink {
+  display: inline;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.projectLink:hover,
+.projectLink:focus-visible {
+  color: #b9ecff;
+  text-decoration: underline;
+}
+
 @media (max-width: 950px) {
   body {
     overflow: auto;
