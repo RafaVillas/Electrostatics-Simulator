@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Simulador interactivo 2D de campos eléctricos, potencial y partículas de prueba."
+    />
+    <title>Simulador interactivo de campos eléctricos</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="title">⚡ Campo Eléctrico 2D</div>
+        <button data-mode="select" class="mode active">
+          Seleccionar / mover
+        </button>
+        <button data-mode="plus" class="mode">+ Carga</button>
+        <button data-mode="minus" class="mode">− Carga</button>
+        <button data-mode="line" class="mode">Distribución lineal</button>
+        <button data-mode="plane" class="mode">Distribución plana</button>
+        <button data-mode="particle" class="mode">Partícula de prueba</button>
+        <button data-mode="delete" class="mode danger">Eliminar</button>
+        <div class="spacer"></div>
+        <button id="pauseBtn">⏸ Pausar partículas</button>
+        <button id="resetBtn">Reiniciar</button>
+      </header>
+
+      <main class="main">
+        <div class="stage" id="stage">
+          <canvas id="fieldCanvas"></canvas>
+          <div class="hud" id="hud">
+            Mueve el cursor para medir <b>E</b> y <b>V</b>.
+          </div>
+        </div>
+
+        <aside class="sidebar">
+          <section class="card">
+            <h3>Visualización</h3>
+            <div class="checks">
+              <label class="check"
+                ><input id="showVectors" type="checkbox" checked /> Vectores
+                E</label
+              >
+              <label class="check"
+                ><input id="showLines" type="checkbox" checked /> Líneas de
+                campo</label
+              >
+              <label class="check"
+                ><input id="showPotential" type="checkbox" /> Potencial
+                V</label
+              >
+              <label class="check"
+                ><input id="showEquip" type="checkbox" />
+                Equipotenciales</label
+              >
+              <label class="check"
+                ><input id="showGrid" type="checkbox" checked /> Grilla /
+                ejes</label
+              >
+              <label class="check"
+                ><input id="showParticles" type="checkbox" checked />
+                Partículas</label
+              >
+            </div>
+            <div class="row">
+              <label>Densidad vectores</label>
+              <input
+                id="vectorDensity"
+                type="range"
+                min="12"
+                max="34"
+                value="23"
+              />
+              <span class="val" id="vectorDensityVal">23</span>
+            </div>
+            <div class="row">
+              <label>Líneas / fuente</label>
+              <input
+                id="lineDensity"
+                type="range"
+                min="4"
+                max="18"
+                value="10"
+              />
+              <span class="val" id="lineDensityVal">10</span>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Objeto seleccionado</h3>
+            <div class="sourceType" id="selectedType">Ninguno</div>
+            <div id="sourceControls">
+              <div class="small">
+                Selecciona una carga o distribución para editar sus parámetros.
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Partículas de prueba</h3>
+            <div class="row">
+              <label>q/m</label>
+              <input
+                id="qOverM"
+                type="range"
+                min="-3"
+                max="3"
+                step="0.1"
+                value="1"
+              />
+              <span class="val" id="qOverMVal">1.0 C/kg</span>
+            </div>
+            <div class="row">
+              <label>Velocidad sim.</label>
+              <input
+                id="timeScale"
+                type="range"
+                min="0.2"
+                max="3"
+                step="0.1"
+                value="1"
+              />
+              <span class="val" id="timeScaleVal">1.0×</span>
+            </div>
+            <div class="row">
+              <button id="clearParticles">Borrar partículas</button>
+            </div>
+            <div class="small">
+              Las partículas no modifican el campo. Se usa
+              <b>a = (q/m)E</b>.
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Configuraciones rápidas</h3>
+            <div class="presets">
+              <button data-preset="dipole">Dipolo</button>
+              <button data-preset="equal">Dos cargas +</button>
+              <button data-preset="linePair">Líneas ±</button>
+              <button data-preset="plates">Placas ±</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Modelo físico</h3>
+            <div class="formula">
+              E(r) = k Σ dq · R / |R|³<br />
+              V(r) = k Σ dq / |R|<br />
+              E = −∇V<br />
+              k = 8.9875517923×10⁹ N·m²/C²
+            </div>
+            <div class="separator"></div>
+            <div class="small notice">
+              Las cargas puntuales usan la ley de Coulomb directamente. Las
+              distribuciones lineales y planas se integran numéricamente como
+              sumas de pequeños elementos <b>dq</b>. El dibujo muestra el campo
+              dentro del plano de visualización (corte 2D). Se enmascara una
+              vecindad muy pequeña alrededor de cada elemento para evitar la
+              singularidad numérica en r = 0.
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Atajos y uso</h3>
+            <div class="small">
+              Arrastra cualquier fuente para moverla. Usa los deslizadores para
+              cambiar posición y magnitud.
+              <span class="kbd">Supr</span> elimina el objeto seleccionado. El
+              mapa de potencial usa escala automática robusta; por eso los
+              colores muestran estructura y signo, no una escala fija entre
+              configuraciones.
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>
