@@ -1,0 +1,2 @@
+export const COULOMB_CONSTANT = 8.9875517923e9;
+export const MIN_SAMPLE_DISTANCE = 0.018;
