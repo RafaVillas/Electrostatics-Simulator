@@ -32,6 +32,48 @@
       <main class="main">
         <div class="stage" id="stage">
           <canvas id="fieldCanvas"></canvas>
+          <div class="navigationControls" aria-label="Controles de navegación">
+            <button
+              id="homeView"
+              type="button"
+              title="Volver al origen"
+              aria-label="Volver al origen"
+            >
+              ⌂
+            </button>
+            <button
+              id="fitView"
+              type="button"
+              title="Encuadrar todas las fuentes"
+            >
+              Encuadrar
+            </button>
+            <button
+              id="zoomOut"
+              type="button"
+              title="Alejar"
+              aria-label="Alejar"
+            >
+              −
+            </button>
+            <span id="zoomLevel" aria-live="polite">100%</span>
+            <button
+              id="zoomIn"
+              type="button"
+              title="Acercar"
+              aria-label="Acercar"
+            >
+              +
+            </button>
+          </div>
+          <canvas
+            id="minimap"
+            class="minimap"
+            width="160"
+            height="112"
+            aria-label="Minimapa del mundo; arrastra para mover la cámara"
+            title="Arrastra para mover la cámara"
+          ></canvas>
           <div class="hud" id="hud">
             Mueve el cursor para medir <b>E</b> y <b>V</b>.
           </div>
@@ -166,7 +208,10 @@
             <h3>Atajos y uso</h3>
             <div class="small">
               Arrastra cualquier fuente para moverla. Usa los deslizadores para
-              cambiar posición y magnitud.
+              cambiar posición y magnitud. Mantén
+              <span class="kbd">Espacio</span> y arrastra, o usa el botón
+              central, para mover la cámara. La rueda controla el zoom bajo el
+              cursor.
               <span class="kbd">Supr</span> elimina el objeto seleccionado. El
               mapa de potencial usa escala automática robusta; por eso los
               colores muestran estructura y signo, no una escala fija entre

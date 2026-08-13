@@ -2,6 +2,8 @@
 
 Simulador interactivo 2D de campos eléctricos, potencial eléctrico y partículas de prueba. La refactorización conserva el modelo y la interacción originales, pero separa la interfaz, los estilos y el cálculo físico para facilitar futuras extensiones.
 
+El área física abarca de −10 m a 10 m en ambos ejes y se recorre mediante una cámara independiente: rueda para zoom bajo el cursor, botón central o <kbd>Espacio</kbd> + arrastre para desplazar la vista. Los controles sobre el canvas permiten volver al origen, encuadrar las fuentes y usar zoom sin rueda.
+
 ## Requisitos
 
 - Node.js 20.19 o superior, o 22.12 o superior
@@ -39,8 +41,10 @@ El contenido listo para producción queda en `dist/` y puede publicarse en cualq
 ```text
 index.html            Entrada de la aplicación
 src/main.js           Estado, render, controles e interacción
+src/camera.js         Cámara 2D, transformaciones, límites y encuadre
 src/physics.js        Modelo físico y discretización de fuentes
 src/config.js         Constantes compartidas
 src/styles.css        Presentación visual
+test/camera.test.js   Pruebas de transformaciones y navegación
 test/physics.test.js  Pruebas de regresión del núcleo físico
 ```

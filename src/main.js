@@ -5,6 +5,8 @@ import {
   electricPotentialAt,
   sourceNetCharge,
 } from "./physics.js";
+import { Camera2D } from "./camera.js";
+import { CAMERA_DEFAULTS, WORLD_BOUNDS } from "./config.js";
 
 const canvas = document.getElementById("fieldCanvas");
 const stage = document.getElementById("stage");
@@ -12,6 +14,9 @@ const context = canvas.getContext("2d");
 const hud = document.getElementById("hud");
 const sourceControls = document.getElementById("sourceControls");
 const selectedType = document.getElementById("selectedType");
+const minimap = document.getElementById("minimap");
+const minimapContext = minimap.getContext("2d");
+const zoomLevel = document.getElementById("zoomLevel");
 
 const ui = {
   showVectors: document.getElementById("showVectors"),
@@ -30,10 +35,15 @@ const ui = {
 let width = 900;
 let height = 600;
 let devicePixelRatio = 1;
-let world = { xmin: -2.25, xmax: 2.25, ymin: -1.5, ymax: 1.5 };
+const camera = new Camera2D({
+  bounds: WORLD_BOUNDS,
+  ...CAMERA_DEFAULTS,
+});
 let mode = "select";
 let selectedId = null;
-let drag = null;
+let interaction = null;
+let spacePressed = false;
+let minimapDragging = false;
 let sources = [];
 let particles = [];
 let sourceSamples = [];
@@ -49,6 +59,7 @@ let dirtyPotential = true;
 let paused = false;
 let lastTime = performance.now();
 let lastHeavy = 0;
+let lastViewportChange = 0;
 
 const formatNumber = (value, digits = 2) =>
   Number.isFinite(value) ? value.toFixed(digits) : "—";
@@ -62,27 +73,25 @@ function resize() {
   canvas.width = Math.round(width * devicePixelRatio);
   canvas.height = Math.round(height * devicePixelRatio);
   context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  camera.setViewport(width, height);
+  resizeMinimap();
+  markViewportDirty();
+}
 
-  const halfY = 1.5;
-  const halfX = halfY * (width / height);
-  world = { xmin: -halfX, xmax: halfX, ymin: -halfY, ymax: halfY };
-  markAllDirty();
+function worldToScreen(x, y) {
+  return camera.worldToScreen(x, y);
+}
+
+function screenToWorld(pixelX, pixelY) {
+  return camera.screenToWorld(pixelX, pixelY);
 }
 
 function screenX(x) {
-  return ((x - world.xmin) / (world.xmax - world.xmin)) * width;
+  return worldToScreen(x, camera.y).x;
 }
 
 function screenY(y) {
-  return height - ((y - world.ymin) / (world.ymax - world.ymin)) * height;
-}
-
-function worldX(pixelX) {
-  return world.xmin + (pixelX / width) * (world.xmax - world.xmin);
-}
-
-function worldY(pixelY) {
-  return world.ymin + ((height - pixelY) / height) * (world.ymax - world.ymin);
+  return worldToScreen(camera.x, y).y;
 }
 
 function markAllDirty() {
@@ -96,14 +105,92 @@ function markGeometryDirty() {
   markAllDirty();
 }
 
+function updateZoomLabel() {
+  zoomLevel.textContent = `${Math.round(
+    (camera.zoom / CAMERA_DEFAULTS.zoom) * 100,
+  )}%`;
+}
+
+function markViewportDirty() {
+  dirtyVectors = true;
+  dirtyPotential = true;
+  lastViewportChange = performance.now();
+  updateZoomLabel();
+}
+
+function sourceExtent(source) {
+  if (source.type === "point") return { x: 0, y: 0 };
+  const cos = Math.cos(source.angle);
+  const sin = Math.sin(source.angle);
+  if (source.type === "line") {
+    return {
+      x: (Math.abs(cos) * source.length) / 2,
+      y: (Math.abs(sin) * source.length) / 2,
+    };
+  }
+  return {
+    x:
+      (Math.abs(cos) * source.width + Math.abs(sin) * source.height) / 2,
+    y:
+      (Math.abs(sin) * source.width + Math.abs(cos) * source.height) / 2,
+  };
+}
+
+function constrainSource(source) {
+  const extent = sourceExtent(source);
+  source.x = clamp(
+    source.x,
+    WORLD_BOUNDS.xmin + extent.x,
+    WORLD_BOUNDS.xmax - extent.x,
+  );
+  source.y = clamp(
+    source.y,
+    WORLD_BOUNDS.ymin + extent.y,
+    WORLD_BOUNDS.ymax - extent.y,
+  );
+  return source;
+}
+
+function sourceBounds(source) {
+  const extent = sourceExtent(source);
+  const pointMargin = source.type === "point" ? 0.18 : 0.08;
+  return {
+    xmin: source.x - extent.x - pointMargin,
+    xmax: source.x + extent.x + pointMargin,
+    ymin: source.y - extent.y - pointMargin,
+    ymax: source.y + extent.y + pointMargin,
+  };
+}
+
+function allSourceBounds() {
+  if (!sources.length) return null;
+  return sources.reduce(
+    (bounds, source) => {
+      const current = sourceBounds(source);
+      return {
+        xmin: Math.min(bounds.xmin, current.xmin),
+        xmax: Math.max(bounds.xmax, current.xmax),
+        ymin: Math.min(bounds.ymin, current.ymin),
+        ymax: Math.max(bounds.ymax, current.ymax),
+      };
+    },
+    {
+      xmin: Infinity,
+      xmax: -Infinity,
+      ymin: Infinity,
+      ymax: -Infinity,
+    },
+  );
+}
+
 function addPoint(x, y, chargeNanocoulombs) {
-  const source = {
+  const source = constrainSource({
     id: nextId++,
     type: "point",
     x,
     y,
     q: chargeNanocoulombs * 1e-9,
-  };
+  });
   sources.push(source);
   selectedId = source.id;
   markGeometryDirty();
@@ -112,7 +199,7 @@ function addPoint(x, y, chargeNanocoulombs) {
 }
 
 function addLine(x, y, densityNanocoulombs = 4) {
-  const source = {
+  const source = constrainSource({
     id: nextId++,
     type: "line",
     x,
@@ -120,7 +207,7 @@ function addLine(x, y, densityNanocoulombs = 4) {
     lambda: densityNanocoulombs * 1e-9,
     length: 1,
     angle: 0,
-  };
+  });
   sources.push(source);
   selectedId = source.id;
   markGeometryDirty();
@@ -129,7 +216,7 @@ function addLine(x, y, densityNanocoulombs = 4) {
 }
 
 function addPlane(x, y, densityNanocoulombs = 4) {
-  const source = {
+  const source = constrainSource({
     id: nextId++,
     type: "plane",
     x,
@@ -138,7 +225,7 @@ function addPlane(x, y, densityNanocoulombs = 4) {
     width: 1,
     height: 0.6,
     angle: 0,
-  };
+  });
   sources.push(source);
   selectedId = source.id;
   markGeometryDirty();
@@ -170,15 +257,17 @@ function computeVectors() {
 
   const columns = Number(ui.vectorDensity.value);
   const rows = Math.max(8, Math.round((columns * height) / width));
+  const visible = camera.getVisibleWorldBounds();
   const vectors = [];
   const magnitudes = [];
 
   for (let row = 0; row < rows; row += 1) {
     for (let column = 0; column < columns; column += 1) {
       const positionX =
-        world.xmin + ((column + 0.5) / columns) * (world.xmax - world.xmin);
+        visible.xmin +
+        ((column + 0.5) / columns) * (visible.xmax - visible.xmin);
       const positionY =
-        world.ymin + ((row + 0.5) / rows) * (world.ymax - world.ymin);
+        visible.ymin + ((row + 0.5) / rows) * (visible.ymax - visible.ymin);
       const field = electricField(positionX, positionY);
 
       if (Number.isFinite(field.mag) && field.mag > 1e-10) {
@@ -316,9 +405,9 @@ function traceLine(seed, outwardSign, sourceSign) {
   const points = [seed];
   let x = seed.x;
   let y = seed.y;
-  const stepSize = 0.022;
+  const stepSize = 0.025;
 
-  for (let step = 0; step < 320; step += 1) {
+  for (let step = 0; step < 900; step += 1) {
     const field = electricField(x, y);
     if (!Number.isFinite(field.mag) || field.mag < 1e-8) break;
 
@@ -338,10 +427,10 @@ function traceLine(seed, outwardSign, sourceSign) {
     points.push({ x, y });
 
     if (
-      x < world.xmin - 0.05 ||
-      x > world.xmax + 0.05 ||
-      y < world.ymin - 0.05 ||
-      y > world.ymax + 0.05
+      x < WORLD_BOUNDS.xmin ||
+      x > WORLD_BOUNDS.xmax ||
+      y < WORLD_BOUNDS.ymin ||
+      y > WORLD_BOUNDS.ymax
     ) {
       break;
     }
@@ -386,16 +475,21 @@ function computePotential() {
     return;
   }
 
-  const columns = 96;
-  const rows = Math.max(56, Math.round((columns * height) / width));
+  const bounds = camera.getVisibleWorldBounds();
+  const pixelWidth = Math.max(1, (bounds.xmax - bounds.xmin) * camera.zoom);
+  const pixelHeight = Math.max(1, (bounds.ymax - bounds.ymin) * camera.zoom);
+  const columns = clamp(Math.round(pixelWidth / 8), 48, 128);
+  const rows = clamp(Math.round(pixelHeight / 8), 36, 96);
   const values = new Float64Array(columns * rows);
   const absoluteValues = [];
 
   for (let row = 0; row < rows; row += 1) {
-    const y = world.ymax - (row / (rows - 1)) * (world.ymax - world.ymin);
+    const y =
+      bounds.ymax - (row / (rows - 1)) * (bounds.ymax - bounds.ymin);
     for (let column = 0; column < columns; column += 1) {
       const x =
-        world.xmin + (column / (columns - 1)) * (world.xmax - world.xmin);
+        bounds.xmin +
+        (column / (columns - 1)) * (bounds.xmax - bounds.xmin);
       const potential = electricPotential(x, y);
       values[row * columns + column] = potential;
       if (Number.isFinite(potential)) absoluteValues.push(Math.abs(potential));
@@ -407,7 +501,7 @@ function computePotential() {
     1e-9,
     absoluteValues[Math.floor(absoluteValues.length * 0.9)] || 1,
   );
-  potentialGrid = { columns, rows, values, scale };
+  potentialGrid = { columns, rows, values, scale, bounds };
 
   potentialCanvas.width = columns;
   potentialCanvas.height = rows;
@@ -438,65 +532,117 @@ function computePotential() {
   potentialContext.putImageData(image, 0, 0);
   dirtyPotential = false;
 }
+function chooseGridStep(targetPixels = 82) {
+  const rawStep = targetPixels / camera.zoom;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const multiplier = [1, 2, 5, 10].find((value) => value >= normalized) || 10;
+  return multiplier * magnitude;
+}
+
+function formatGridCoordinate(value, step) {
+  const digits = Math.max(0, -Math.floor(Math.log10(step)));
+  const normalized = Math.abs(value) < step * 1e-6 ? 0 : value;
+  return normalized.toFixed(digits);
+}
+
 function drawGrid() {
   if (!ui.showGrid.checked) return;
 
+  const visible = camera.getVisibleWorldBounds();
+  const left = screenX(visible.xmin);
+  const right = screenX(visible.xmax);
+  const top = screenY(visible.ymax);
+  const bottom = screenY(visible.ymin);
+  const step = chooseGridStep();
+  const firstX = Math.ceil((visible.xmin - step * 1e-8) / step) * step;
+  const firstY = Math.ceil((visible.ymin - step * 1e-8) / step) * step;
+
   context.save();
   context.lineWidth = 1;
-  context.strokeStyle = "rgba(140,160,195,.13)";
-  const step = 0.25;
-
-  for (
-    let x = Math.ceil(world.xmin / step) * step;
-    x <= world.xmax;
-    x += step
-  ) {
+  context.strokeStyle = "rgba(140,160,195,.14)";
+  for (let x = firstX; x <= visible.xmax + step * 1e-8; x += step) {
     context.beginPath();
-    context.moveTo(screenX(x), 0);
-    context.lineTo(screenX(x), height);
+    context.moveTo(screenX(x), top);
+    context.lineTo(screenX(x), bottom);
     context.stroke();
   }
-  for (
-    let y = Math.ceil(world.ymin / step) * step;
-    y <= world.ymax;
-    y += step
-  ) {
+  for (let y = firstY; y <= visible.ymax + step * 1e-8; y += step) {
     context.beginPath();
-    context.moveTo(0, screenY(y));
-    context.lineTo(width, screenY(y));
+    context.moveTo(left, screenY(y));
+    context.lineTo(right, screenY(y));
     context.stroke();
   }
 
-  context.strokeStyle = "rgba(210,225,245,.35)";
-  context.beginPath();
-  context.moveTo(0, screenY(0));
-  context.lineTo(width, screenY(0));
-  context.stroke();
-  context.beginPath();
-  context.moveTo(screenX(0), 0);
-  context.lineTo(screenX(0), height);
-  context.stroke();
+  context.strokeStyle = "rgba(210,225,245,.42)";
+  context.lineWidth = 1.35;
+  if (visible.ymin <= 0 && visible.ymax >= 0) {
+    context.beginPath();
+    context.moveTo(left, screenY(0));
+    context.lineTo(right, screenY(0));
+    context.stroke();
+  }
+  if (visible.xmin <= 0 && visible.xmax >= 0) {
+    context.beginPath();
+    context.moveTo(screenX(0), top);
+    context.lineTo(screenX(0), bottom);
+    context.stroke();
+  }
+
+  context.fillStyle = "rgba(188,204,229,.72)";
+  context.font = "11px system-ui";
+  context.textAlign = "center";
+  context.textBaseline = "top";
+  const labelY = clamp(screenY(0) + 6, top + 5, bottom - 15);
+  for (let x = firstX; x <= visible.xmax + step * 1e-8; x += step) {
+    context.fillText(formatGridCoordinate(x, step), screenX(x), labelY);
+  }
+
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  const labelX = clamp(screenX(0) - 7, left + 26, right - 5);
+  for (let y = firstY; y <= visible.ymax + step * 1e-8; y += step) {
+    if (Math.abs(y) < step * 1e-6) continue;
+    context.fillText(formatGridCoordinate(y, step), labelX, screenY(y));
+  }
+
+  context.fillStyle = "rgba(125,211,252,.78)";
+  context.textAlign = "right";
+  context.textBaseline = "bottom";
+  context.fillText("x [m]", right - 8, bottom - 7);
+  context.save();
+  context.translate(left + 10, top + 8);
+  context.rotate(-Math.PI / 2);
+  context.textAlign = "right";
+  context.textBaseline = "top";
+  context.fillText("y [m]", 0, 0);
+  context.restore();
   context.restore();
 }
 
 function drawPotential() {
   if (!ui.showPotential.checked || !potentialGrid) return;
 
+  const { bounds } = potentialGrid;
+  const left = screenX(bounds.xmin);
+  const top = screenY(bounds.ymax);
+  const drawWidth = screenX(bounds.xmax) - left;
+  const drawHeight = screenY(bounds.ymin) - top;
   context.save();
   context.imageSmoothingEnabled = true;
   context.globalAlpha = 0.78;
-  context.drawImage(potentialCanvas, 0, 0, width, height);
+  context.drawImage(potentialCanvas, left, top, drawWidth, drawHeight);
   context.restore();
 
   context.save();
   context.fillStyle = "rgba(10,15,27,.72)";
-  context.fillRect(12, 12, 162, 24);
+  context.fillRect(12, 54, 162, 24);
   context.fillStyle = "#dbeafe";
   context.font = "12px system-ui";
   context.fillText(
     "Escala color: ±" + potentialGrid.scale.toExponential(2) + " V",
     20,
-    28,
+    70,
   );
   context.restore();
 }
@@ -516,7 +662,7 @@ function interpolateEdge(x1, y1, value1, x2, y2, value2, level) {
 function drawEquipotentials() {
   if (!ui.showEquip.checked || !potentialGrid) return;
 
-  const { columns, rows, values, scale } = potentialGrid;
+  const { columns, rows, values, scale, bounds } = potentialGrid;
   const levels = [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8].map(
     (level) => level * scale,
   );
@@ -535,10 +681,22 @@ function drawEquipotentials() {
         const value1 = values[index + 1];
         const value2 = values[index + 1 + columns];
         const value3 = values[index + columns];
-        const x0 = (column / (columns - 1)) * width;
-        const x1 = ((column + 1) / (columns - 1)) * width;
-        const y0 = (row / (rows - 1)) * height;
-        const y1 = ((row + 1) / (rows - 1)) * height;
+        const worldX0 =
+          bounds.xmin +
+          (column / (columns - 1)) * (bounds.xmax - bounds.xmin);
+        const worldX1 =
+          bounds.xmin +
+          ((column + 1) / (columns - 1)) * (bounds.xmax - bounds.xmin);
+        const worldY0 =
+          bounds.ymax -
+          (row / (rows - 1)) * (bounds.ymax - bounds.ymin);
+        const worldY1 =
+          bounds.ymax -
+          ((row + 1) / (rows - 1)) * (bounds.ymax - bounds.ymin);
+        const x0 = screenX(worldX0);
+        const x1 = screenX(worldX1);
+        const y0 = screenY(worldY0);
+        const y1 = screenY(worldY1);
         const points = [];
 
         if ((value0 - level) * (value1 - level) < 0) {
@@ -847,21 +1005,192 @@ function updateParticles(realDeltaTime) {
 
   particles = particles.filter(
     (particle) =>
-      particle.x > world.xmin - 0.2 &&
-      particle.x < world.xmax + 0.2 &&
-      particle.y > world.ymin - 0.2 &&
-      particle.y < world.ymax + 0.2,
+      particle.x > WORLD_BOUNDS.xmin - 0.2 &&
+      particle.x < WORLD_BOUNDS.xmax + 0.2 &&
+      particle.y > WORLD_BOUNDS.ymin - 0.2 &&
+      particle.y < WORLD_BOUNDS.ymax + 0.2,
   );
 }
 
 function maybeRecompute(now) {
   if (dirtySamples) rebuildSamples();
-  if (dirtyVectors) computeVectors();
-  if (now - lastHeavy > 65) {
+  const navigationSettled =
+    !interaction || interaction.type !== "pan"
+      ? now - lastViewportChange > 55
+      : false;
+  if (dirtyVectors && navigationSettled) computeVectors();
+  if (now - lastHeavy > 80) {
     if (dirtyLines) computeFieldLines();
-    if (dirtyPotential) computePotential();
+    if (dirtyPotential && navigationSettled) computePotential();
     lastHeavy = now;
   }
+}
+
+function worldScreenRect() {
+  const topLeft = worldToScreen(WORLD_BOUNDS.xmin, WORLD_BOUNDS.ymax);
+  const bottomRight = worldToScreen(WORLD_BOUNDS.xmax, WORLD_BOUNDS.ymin);
+  return {
+    left: topLeft.x,
+    top: topLeft.y,
+    width: bottomRight.x - topLeft.x,
+    height: bottomRight.y - topLeft.y,
+  };
+}
+
+function drawWorldSurface() {
+  const rect = worldScreenRect();
+  context.save();
+  context.shadowColor = "rgba(67, 106, 153, .22)";
+  context.shadowBlur = 22;
+  context.fillStyle = "#070c16";
+  context.fillRect(rect.left, rect.top, rect.width, rect.height);
+  context.restore();
+}
+
+function clipToWorld() {
+  const rect = worldScreenRect();
+  context.beginPath();
+  context.rect(rect.left, rect.top, rect.width, rect.height);
+  context.clip();
+}
+
+function drawWorldBoundary() {
+  const rect = worldScreenRect();
+  context.save();
+  context.strokeStyle = "rgba(126, 164, 211, .28)";
+  context.lineWidth = 1.2;
+  context.strokeRect(rect.left, rect.top, rect.width, rect.height);
+  context.restore();
+}
+
+function chooseScaleLength(targetPixels = 92) {
+  const rawLength = targetPixels / camera.zoom;
+  const magnitude = 10 ** Math.floor(Math.log10(rawLength));
+  const candidates = [1, 2, 5, 10].map((value) => value * magnitude);
+  return candidates.reduce((best, value) =>
+    Math.abs(value * camera.zoom - targetPixels) <
+    Math.abs(best * camera.zoom - targetPixels)
+      ? value
+      : best,
+  );
+}
+
+function drawScaleIndicator() {
+  const physicalLength = chooseScaleLength();
+  const pixelLength = physicalLength * camera.zoom;
+  const x = width - pixelLength - 22;
+  const y = height - 28;
+  context.save();
+  context.strokeStyle = "rgba(223,234,250,.82)";
+  context.fillStyle = "rgba(223,234,250,.88)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(x, y);
+  context.lineTo(x + pixelLength, y);
+  context.moveTo(x, y - 4);
+  context.lineTo(x, y + 4);
+  context.moveTo(x + pixelLength, y - 4);
+  context.lineTo(x + pixelLength, y + 4);
+  context.stroke();
+  context.font = "11px system-ui";
+  context.textAlign = "center";
+  context.fillText(
+    `${formatGridCoordinate(physicalLength, physicalLength)} m`,
+    x + pixelLength / 2,
+    y - 8,
+  );
+  context.restore();
+}
+
+function resizeMinimap() {
+  const bounds = minimap.getBoundingClientRect();
+  const minimapWidth = Math.max(1, bounds.width);
+  const minimapHeight = Math.max(1, bounds.height);
+  minimap.width = Math.round(minimapWidth * devicePixelRatio);
+  minimap.height = Math.round(minimapHeight * devicePixelRatio);
+  minimapContext.setTransform(
+    devicePixelRatio,
+    0,
+    0,
+    devicePixelRatio,
+    0,
+    0,
+  );
+}
+
+function minimapMetrics() {
+  const widthPixels = minimap.clientWidth;
+  const heightPixels = minimap.clientHeight;
+  const padding = 9;
+  const mapWidth = widthPixels - padding * 2;
+  const mapHeight = heightPixels - padding * 2;
+  return {
+    widthPixels,
+    heightPixels,
+    padding,
+    mapWidth,
+    mapHeight,
+    toX: (x) =>
+      padding +
+      ((x - WORLD_BOUNDS.xmin) / (WORLD_BOUNDS.xmax - WORLD_BOUNDS.xmin)) *
+        mapWidth,
+    toY: (y) =>
+      padding +
+      ((WORLD_BOUNDS.ymax - y) / (WORLD_BOUNDS.ymax - WORLD_BOUNDS.ymin)) *
+        mapHeight,
+  };
+}
+
+function drawMinimap() {
+  const map = minimapMetrics();
+  minimapContext.clearRect(0, 0, map.widthPixels, map.heightPixels);
+  minimapContext.fillStyle = "rgba(6, 12, 23, .92)";
+  minimapContext.fillRect(0, 0, map.widthPixels, map.heightPixels);
+  minimapContext.fillStyle = "rgba(21, 33, 52, .9)";
+  minimapContext.strokeStyle = "rgba(139, 166, 204, .38)";
+  minimapContext.lineWidth = 1;
+  minimapContext.fillRect(map.padding, map.padding, map.mapWidth, map.mapHeight);
+  minimapContext.strokeRect(map.padding, map.padding, map.mapWidth, map.mapHeight);
+
+  for (const source of sources) {
+    const color = signColor(sourceNetCharge(source));
+    minimapContext.fillStyle = color;
+    minimapContext.strokeStyle = color;
+    if (source.type === "point") {
+      minimapContext.beginPath();
+      minimapContext.arc(map.toX(source.x), map.toY(source.y), 2.6, 0, Math.PI * 2);
+      minimapContext.fill();
+    } else {
+      const extent = sourceExtent(source);
+      minimapContext.globalAlpha = 0.8;
+      minimapContext.strokeRect(
+        map.toX(source.x - extent.x),
+        map.toY(source.y + extent.y),
+        (extent.x * 2 * map.mapWidth) /
+          (WORLD_BOUNDS.xmax - WORLD_BOUNDS.xmin),
+        (extent.y * 2 * map.mapHeight) /
+          (WORLD_BOUNDS.ymax - WORLD_BOUNDS.ymin),
+      );
+      minimapContext.globalAlpha = 1;
+    }
+  }
+
+  const visible = camera.getVisibleBounds();
+  const viewport = {
+    xmin: Math.max(visible.xmin, WORLD_BOUNDS.xmin),
+    xmax: Math.min(visible.xmax, WORLD_BOUNDS.xmax),
+    ymin: Math.max(visible.ymin, WORLD_BOUNDS.ymin),
+    ymax: Math.min(visible.ymax, WORLD_BOUNDS.ymax),
+  };
+  minimapContext.fillStyle = "rgba(125, 211, 252, .08)";
+  minimapContext.strokeStyle = "rgba(125, 211, 252, .9)";
+  minimapContext.lineWidth = 1.2;
+  const viewportX = map.toX(viewport.xmin);
+  const viewportY = map.toY(viewport.ymax);
+  const viewportWidth = map.toX(viewport.xmax) - viewportX;
+  const viewportHeight = map.toY(viewport.ymin) - viewportY;
+  minimapContext.fillRect(viewportX, viewportY, viewportWidth, viewportHeight);
+  minimapContext.strokeRect(viewportX, viewportY, viewportWidth, viewportHeight);
 }
 
 function render(now) {
@@ -870,8 +1199,11 @@ function render(now) {
   updateParticles(deltaTime);
   maybeRecompute(now);
   context.clearRect(0, 0, width, height);
-  context.fillStyle = "#070c16";
+  context.fillStyle = "#030712";
   context.fillRect(0, 0, width, height);
+  drawWorldSurface();
+  context.save();
+  clipToWorld();
   drawPotential();
   drawGrid();
   drawEquipotentials();
@@ -879,6 +1211,10 @@ function render(now) {
   drawVectors();
   for (const source of sources) drawSource(source);
   drawParticles();
+  context.restore();
+  drawWorldBoundary();
+  drawScaleIndicator();
+  drawMinimap();
   requestAnimationFrame(render);
 }
 
@@ -928,8 +1264,7 @@ function hitTest(pixelX, pixelY) {
         return source;
       }
     } else {
-      const x = worldX(pixelX);
-      const y = worldY(pixelY);
+      const { x, y } = screenToWorld(pixelX, pixelY);
       const cos = Math.cos(source.angle);
       const sin = Math.sin(source.angle);
       const localX = (x - source.x) * cos + (y - source.y) * sin;
@@ -949,23 +1284,52 @@ function hitTest(pixelX, pixelY) {
 canvas.addEventListener("pointerdown", (event) => {
   canvas.setPointerCapture(event.pointerId);
   const pointer = pointerPosition(event);
-  const x = worldX(pointer.pixelX);
-  const y = worldY(pointer.pixelY);
+  const { x, y } = screenToWorld(pointer.pixelX, pointer.pixelY);
   const hit = hitTest(pointer.pixelX, pointer.pixelY);
+  const wantsPan =
+    event.button === 1 ||
+    (event.button === 0 && spacePressed) ||
+    (event.pointerType === "touch" && mode === "select" && !hit);
+
+  if (wantsPan) {
+    event.preventDefault();
+    interaction = {
+      type: "pan",
+      pointerId: event.pointerId,
+      lastPixelX: pointer.pixelX,
+      lastPixelY: pointer.pixelY,
+    };
+    canvas.classList.add("panning");
+    return;
+  }
+
+  const insideWorld =
+    x >= WORLD_BOUNDS.xmin &&
+    x <= WORLD_BOUNDS.xmax &&
+    y >= WORLD_BOUNDS.ymin &&
+    y <= WORLD_BOUNDS.ymax;
 
   if (mode === "select") {
     selectedId = hit ? hit.id : null;
     updateControls();
-    if (hit) drag = { id: hit.id, dx: x - hit.x, dy: y - hit.y };
-  } else if (mode === "plus") {
+    if (hit) {
+      interaction = {
+        type: "source",
+        pointerId: event.pointerId,
+        id: hit.id,
+        dx: x - hit.x,
+        dy: y - hit.y,
+      };
+    }
+  } else if (mode === "plus" && insideWorld) {
     addPoint(x, y, 2);
-  } else if (mode === "minus") {
+  } else if (mode === "minus" && insideWorld) {
     addPoint(x, y, -2);
-  } else if (mode === "line") {
+  } else if (mode === "line" && insideWorld) {
     addLine(x, y, 4);
-  } else if (mode === "plane") {
+  } else if (mode === "plane" && insideWorld) {
     addPlane(x, y, 4);
-  } else if (mode === "particle") {
+  } else if (mode === "particle" && insideWorld) {
     particles.push({ x, y, vx: 0, vy: 0, trail: [{ x, y }] });
   } else if (mode === "delete" && hit) {
     sources = sources.filter((source) => source.id !== hit.id);
@@ -977,8 +1341,22 @@ canvas.addEventListener("pointerdown", (event) => {
 
 canvas.addEventListener("pointermove", (event) => {
   const pointer = pointerPosition(event);
-  const x = worldX(pointer.pixelX);
-  const y = worldY(pointer.pixelY);
+  if (
+    interaction?.type === "pan" &&
+    interaction.pointerId === event.pointerId
+  ) {
+    camera.panByPixels(
+      pointer.pixelX - interaction.lastPixelX,
+      pointer.pixelY - interaction.lastPixelY,
+    );
+    interaction.lastPixelX = pointer.pixelX;
+    interaction.lastPixelY = pointer.pixelY;
+    markViewportDirty();
+    hud.textContent = `Vista centrada en (${formatNumber(camera.x, 2)}, ${formatNumber(camera.y, 2)}) m`;
+    return;
+  }
+
+  const { x, y } = screenToWorld(pointer.pixelX, pointer.pixelY);
   const field = electricField(x, y);
   const potential = electricPotential(x, y);
 
@@ -997,27 +1375,118 @@ canvas.addEventListener("pointermove", (event) => {
     potential.toExponential(3) +
     " V</b>";
 
-  if (drag) {
-    const source = sources.find((candidate) => candidate.id === drag.id);
+  if (
+    interaction?.type === "source" &&
+    interaction.pointerId === event.pointerId
+  ) {
+    const source = sources.find(
+      (candidate) => candidate.id === interaction.id,
+    );
     if (source) {
-      source.x = x - drag.dx;
-      source.y = y - drag.dy;
+      source.x = x - interaction.dx;
+      source.y = y - interaction.dy;
+      constrainSource(source);
       markGeometryDirty();
       syncControlValues(source);
     }
   }
 });
 
-canvas.addEventListener("pointerup", () => {
-  drag = null;
-});
-canvas.addEventListener("pointercancel", () => {
-  drag = null;
-});
+function endPointerInteraction(event) {
+  if (interaction && interaction.pointerId === event.pointerId) {
+    interaction = null;
+    canvas.classList.remove("panning");
+    updatePanCursor();
+  }
+}
+
+canvas.addEventListener("pointerup", endPointerInteraction);
+canvas.addEventListener("pointercancel", endPointerInteraction);
 canvas.addEventListener("mouseleave", () => {
-  if (!drag) {
+  if (!interaction) {
     hud.innerHTML = "Mueve el cursor para medir <b>E</b> y <b>V</b>.";
   }
+});
+
+canvas.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    const pointer = pointerPosition(event);
+    const delta =
+      event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1);
+    const factor = Math.exp(-delta * 0.0015);
+    camera.zoomAt(
+      pointer.pixelX,
+      pointer.pixelY,
+      camera.zoom * factor,
+    );
+    markViewportDirty();
+  },
+  { passive: false },
+);
+
+function updatePanCursor() {
+  canvas.classList.toggle(
+    "pan-ready",
+    spacePressed && interaction?.type !== "pan",
+  );
+}
+
+function resetCamera() {
+  camera.reset();
+  markViewportDirty();
+}
+
+function fitAllSources() {
+  const bounds = allSourceBounds();
+  if (bounds) camera.fitBounds(bounds, { padding: 64, minimumSpan: 1.2 });
+  else camera.reset();
+  markViewportDirty();
+}
+
+function zoomFromCenter(factor) {
+  camera.zoomAt(width / 2, height / 2, camera.zoom * factor);
+  markViewportDirty();
+}
+
+document.getElementById("homeView").addEventListener("click", resetCamera);
+document.getElementById("fitView").addEventListener("click", fitAllSources);
+document
+  .getElementById("zoomIn")
+  .addEventListener("click", () => zoomFromCenter(1.25));
+document
+  .getElementById("zoomOut")
+  .addEventListener("click", () => zoomFromCenter(1 / 1.25));
+
+function centerCameraFromMinimap(event) {
+  const rect = minimap.getBoundingClientRect();
+  const map = minimapMetrics();
+  const localX = event.clientX - rect.left;
+  const localY = event.clientY - rect.top;
+  const normalizedX = clamp((localX - map.padding) / map.mapWidth, 0, 1);
+  const normalizedY = clamp((localY - map.padding) / map.mapHeight, 0, 1);
+  camera.setCenter(
+    WORLD_BOUNDS.xmin + normalizedX * (WORLD_BOUNDS.xmax - WORLD_BOUNDS.xmin),
+    WORLD_BOUNDS.ymax - normalizedY * (WORLD_BOUNDS.ymax - WORLD_BOUNDS.ymin),
+  );
+  markViewportDirty();
+}
+
+minimap.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  minimapDragging = true;
+  minimap.setPointerCapture(event.pointerId);
+  centerCameraFromMinimap(event);
+});
+minimap.addEventListener("pointermove", (event) => {
+  if (minimapDragging) centerCameraFromMinimap(event);
+});
+minimap.addEventListener("pointerup", () => {
+  minimapDragging = false;
+});
+minimap.addEventListener("pointercancel", () => {
+  minimapDragging = false;
 });
 
 document.querySelectorAll(".mode").forEach((button) => {
@@ -1072,8 +1541,8 @@ function updateControls() {
   html += sliderRow(
     "x",
     "x",
-    -3,
-    3,
+    WORLD_BOUNDS.xmin,
+    WORLD_BOUNDS.xmax,
     0.01,
     source.x,
     (value) => Number(value).toFixed(2) + " m",
@@ -1081,8 +1550,8 @@ function updateControls() {
   html += sliderRow(
     "y",
     "y",
-    -1.5,
-    1.5,
+    WORLD_BOUNDS.ymin,
+    WORLD_BOUNDS.ymax,
     0.01,
     source.y,
     (value) => Number(value).toFixed(2) + " m",
@@ -1178,6 +1647,7 @@ function updateControls() {
       else if (property === "sigmaNCm2") source.sigma = value * 1e-9;
       else if (property === "angleDeg") source.angle = (value * Math.PI) / 180;
       else source[property] = value;
+      constrainSource(source);
       markGeometryDirty();
       syncControlValues(source);
     });
@@ -1279,6 +1749,7 @@ document.querySelectorAll("[data-preset]").forEach((button) => {
 
 document.getElementById("resetBtn").addEventListener("click", () => {
   loadPreset("dipole");
+  resetCamera();
 });
 document.getElementById("clearParticles").addEventListener("click", () => {
   particles = [];
@@ -1320,14 +1791,37 @@ ui.timeScale.addEventListener("input", () => {
 
 window.addEventListener("keydown", (event) => {
   if (
+    event.code === "Space" &&
+    !event.target.matches("input, textarea, select, button")
+  ) {
+    event.preventDefault();
+    spacePressed = true;
+    updatePanCursor();
+  }
+  if (
     (event.key === "Delete" || event.key === "Backspace") &&
-    selectedId !== null
+    selectedId !== null &&
+    !event.target.matches("input, textarea")
   ) {
     sources = sources.filter((source) => source.id !== selectedId);
     selectedId = null;
     markGeometryDirty();
     updateControls();
   }
+});
+
+window.addEventListener("keyup", (event) => {
+  if (event.code === "Space") {
+    spacePressed = false;
+    updatePanCursor();
+  }
+});
+
+window.addEventListener("blur", () => {
+  spacePressed = false;
+  interaction = null;
+  canvas.classList.remove("panning");
+  updatePanCursor();
 });
 
 new ResizeObserver(resize).observe(stage);
