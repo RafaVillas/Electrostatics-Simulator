@@ -7,6 +7,28 @@ import {
 } from "./physics.js";
 import { Camera2D } from "./camera.js";
 import { CAMERA_DEFAULTS, WORLD_BOUNDS } from "./config.js";
+import {
+  exceedsDragThreshold,
+  findSourceAtScreen,
+  getPointerInteractionType,
+  sourcePositionFromPointer,
+} from "./interaction.js";
+import {
+  createPotentialGridGeometry,
+  extractContourSegments,
+  potentialGridCanServeViewport,
+  POTENTIAL_INTERACTIVE_SPACING_PIXELS,
+  POTENTIAL_OVERSCAN_PIXELS,
+  POTENTIAL_TARGET_SPACING_PIXELS,
+} from "./potential-grid.js";
+import {
+  formatPointChargeNanocoulombs,
+  MAX_POINT_CHARGE_NC,
+  MIN_POINT_CHARGE_NC,
+  normalizePointChargeNanocoulombs,
+  snapPointChargeSliderNanocoulombs,
+} from "./property-controls.js";
+import { createVectorGrid, vectorSpacingPixels } from "./vector-grid.js";
 
 const canvas = document.getElementById("fieldCanvas");
 const stage = document.getElementById("stage");
@@ -14,6 +36,7 @@ const context = canvas.getContext("2d");
 const hud = document.getElementById("hud");
 const sourceControls = document.getElementById("sourceControls");
 const selectedType = document.getElementById("selectedType");
+const placementStatus = document.getElementById("placementStatus");
 const minimap = document.getElementById("minimap");
 const minimapContext = minimap.getContext("2d");
 const zoomLevel = document.getElementById("zoomLevel");
@@ -39,10 +62,10 @@ const camera = new Camera2D({
   bounds: WORLD_BOUNDS,
   ...CAMERA_DEFAULTS,
 });
-let mode = "select";
+let activePlacementTool = null;
 let selectedId = null;
 let interaction = null;
-let spacePressed = false;
+let inspectorAdjustmentActive = false;
 let minimapDragging = false;
 let sources = [];
 let particles = [];
@@ -52,6 +75,7 @@ let fieldVectors = [];
 let fieldLines = [];
 let potentialGrid = null;
 const potentialCanvas = document.createElement("canvas");
+let potentialSceneVersion = 0;
 let dirtySamples = true;
 let dirtyVectors = true;
 let dirtyLines = true;
@@ -59,23 +83,38 @@ let dirtyPotential = true;
 let paused = false;
 let lastTime = performance.now();
 let lastHeavy = 0;
-let lastViewportChange = 0;
+let viewportSizeDirty = true;
+
+const VECTOR_GRID_OVERSCAN = 2;
 
 const formatNumber = (value, digits = 2) =>
   Number.isFinite(value) ? value.toFixed(digits) : "—";
 const signColor = (charge) => (charge >= 0 ? "#ff615a" : "#4aa3ff");
 
-function resize() {
+function scheduleViewportResize() {
+  viewportSizeDirty = true;
+}
+
+function syncViewportSize() {
+  if (!viewportSizeDirty) return;
+
   const bounds = stage.getBoundingClientRect();
-  devicePixelRatio = Math.min(2, window.devicePixelRatio || 1);
-  width = Math.max(320, bounds.width);
-  height = Math.max(320, bounds.height);
-  canvas.width = Math.round(width * devicePixelRatio);
-  canvas.height = Math.round(height * devicePixelRatio);
+  const nextDevicePixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  const nextWidth = Math.max(1, bounds.width);
+  const nextHeight = Math.max(1, bounds.height);
+  const nextCanvasWidth = Math.round(nextWidth * nextDevicePixelRatio);
+  const nextCanvasHeight = Math.round(nextHeight * nextDevicePixelRatio);
+
+  width = nextWidth;
+  height = nextHeight;
+  devicePixelRatio = nextDevicePixelRatio;
+  if (canvas.width !== nextCanvasWidth) canvas.width = nextCanvasWidth;
+  if (canvas.height !== nextCanvasHeight) canvas.height = nextCanvasHeight;
   context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   camera.setViewport(width, height);
   resizeMinimap();
   markViewportDirty();
+  viewportSizeDirty = false;
 }
 
 function worldToScreen(x, y) {
@@ -102,6 +141,7 @@ function markAllDirty() {
 }
 
 function markGeometryDirty() {
+  potentialSceneVersion += 1;
   markAllDirty();
 }
 
@@ -114,7 +154,6 @@ function updateZoomLabel() {
 function markViewportDirty() {
   dirtyVectors = true;
   dirtyPotential = true;
-  lastViewportChange = performance.now();
   updateZoomLabel();
 }
 
@@ -192,9 +231,7 @@ function addPoint(x, y, chargeNanocoulombs) {
     q: chargeNanocoulombs * 1e-9,
   });
   sources.push(source);
-  selectedId = source.id;
   markGeometryDirty();
-  updateControls();
   return source;
 }
 
@@ -209,9 +246,7 @@ function addLine(x, y, densityNanocoulombs = 4) {
     angle: 0,
   });
   sources.push(source);
-  selectedId = source.id;
   markGeometryDirty();
-  updateControls();
   return source;
 }
 
@@ -227,9 +262,7 @@ function addPlane(x, y, densityNanocoulombs = 4) {
     angle: 0,
   });
   sources.push(source);
-  selectedId = source.id;
   markGeometryDirty();
-  updateControls();
   return source;
 }
 
@@ -255,19 +288,25 @@ function computeVectors() {
     return;
   }
 
-  const columns = Number(ui.vectorDensity.value);
-  const rows = Math.max(8, Math.round((columns * height) / width));
   const visible = camera.getVisibleWorldBounds();
+  const grid = createVectorGrid({
+    visibleBounds: visible,
+    worldBounds: WORLD_BOUNDS,
+    zoom: camera.zoom,
+    spacingPixels: vectorSpacingPixels(Number(ui.vectorDensity.value)),
+    overscan: VECTOR_GRID_OVERSCAN,
+  });
   const vectors = [];
   const magnitudes = [];
 
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < columns; column += 1) {
-      const positionX =
-        visible.xmin +
-        ((column + 0.5) / columns) * (visible.xmax - visible.xmin);
-      const positionY =
-        visible.ymin + ((row + 0.5) / rows) * (visible.ymax - visible.ymin);
+  for (let row = grid.firstRow; row <= grid.lastRow; row += 1) {
+    for (
+      let column = grid.firstColumn;
+      column <= grid.lastColumn;
+      column += 1
+    ) {
+      const positionX = column * grid.spacingWorld;
+      const positionY = row * grid.spacingWorld;
       const field = electricField(positionX, positionY);
 
       if (Number.isFinite(field.mag) && field.mag > 1e-10) {
@@ -468,28 +507,29 @@ function computeFieldLines() {
   dirtyLines = false;
 }
 
-function computePotential() {
-  if (!(ui.showPotential.checked || ui.showEquip.checked)) {
-    potentialGrid = null;
-    dirtyPotential = false;
-    return;
-  }
+function contourLevels(scale) {
+  return [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8].map(
+    (level) => level * scale,
+  );
+}
 
-  const bounds = camera.getVisibleWorldBounds();
-  const pixelWidth = Math.max(1, (bounds.xmax - bounds.xmin) * camera.zoom);
-  const pixelHeight = Math.max(1, (bounds.ymax - bounds.ymin) * camera.zoom);
-  const columns = clamp(Math.round(pixelWidth / 8), 48, 128);
-  const rows = clamp(Math.round(pixelHeight / 8), 36, 96);
+function ensurePotentialContours() {
+  if (!potentialGrid || potentialGrid.contours) return;
+  potentialGrid.contours = extractContourSegments(
+    potentialGrid,
+    contourLevels(potentialGrid.scale),
+  );
+}
+
+function rebuildPotentialGrid(geometry) {
+  const { columns, rows, bounds, spacingWorld } = geometry;
   const values = new Float64Array(columns * rows);
   const absoluteValues = [];
 
   for (let row = 0; row < rows; row += 1) {
-    const y =
-      bounds.ymax - (row / (rows - 1)) * (bounds.ymax - bounds.ymin);
+    const y = bounds.ymax - row * spacingWorld;
     for (let column = 0; column < columns; column += 1) {
-      const x =
-        bounds.xmin +
-        (column / (columns - 1)) * (bounds.xmax - bounds.xmin);
+      const x = bounds.xmin + column * spacingWorld;
       const potential = electricPotential(x, y);
       values[row * columns + column] = potential;
       if (Number.isFinite(potential)) absoluteValues.push(Math.abs(potential));
@@ -501,7 +541,13 @@ function computePotential() {
     1e-9,
     absoluteValues[Math.floor(absoluteValues.length * 0.9)] || 1,
   );
-  potentialGrid = { columns, rows, values, scale, bounds };
+  potentialGrid = {
+    ...geometry,
+    values,
+    scale,
+    contours: null,
+    sceneVersion: potentialSceneVersion,
+  };
 
   potentialCanvas.width = columns;
   potentialCanvas.height = rows;
@@ -530,8 +576,48 @@ function computePotential() {
   }
 
   potentialContext.putImageData(image, 0, 0);
+  if (ui.showEquip.checked) ensurePotentialContours();
   dirtyPotential = false;
 }
+
+function ensurePotentialGrid() {
+  if (!(ui.showPotential.checked || ui.showEquip.checked)) {
+    dirtyPotential = false;
+    return;
+  }
+
+  const visibleBounds = camera.getVisibleWorldBounds();
+  const targetSpacingPixels =
+    interaction?.type === "source-drag" || inspectorAdjustmentActive
+      ? POTENTIAL_INTERACTIVE_SPACING_PIXELS
+      : POTENTIAL_TARGET_SPACING_PIXELS;
+  const geometry = createPotentialGridGeometry({
+    visibleBounds,
+    zoom: camera.zoom,
+    targetSpacingPixels,
+    overscanCells: Math.ceil(
+      POTENTIAL_OVERSCAN_PIXELS / targetSpacingPixels,
+    ),
+  });
+  const canReuseGrid = potentialGridCanServeViewport(
+    potentialGrid,
+    visibleBounds,
+    {
+      zoom: camera.zoom,
+      maximumSpacingPixels: geometry.spacingPixels * 1.25,
+      sceneVersion: potentialSceneVersion,
+    },
+  );
+
+  if (canReuseGrid) {
+    if (ui.showEquip.checked) ensurePotentialContours();
+    dirtyPotential = false;
+    return;
+  }
+
+  rebuildPotentialGrid(geometry);
+}
+
 function chooseGridStep(targetPixels = 82) {
   const rawStep = targetPixels / camera.zoom;
   const magnitude = 10 ** Math.floor(Math.log10(rawStep));
@@ -647,84 +733,20 @@ function drawPotential() {
   context.restore();
 }
 
-function interpolateEdge(x1, y1, value1, x2, y2, value2, level) {
-  const difference = value2 - value1;
-  const factor =
-    Math.abs(difference) < 1e-30
-      ? 0.5
-      : clamp((level - value1) / difference, 0, 1);
-  return {
-    x: x1 + factor * (x2 - x1),
-    y: y1 + factor * (y2 - y1),
-  };
-}
-
 function drawEquipotentials() {
   if (!ui.showEquip.checked || !potentialGrid) return;
-
-  const { columns, rows, values, scale, bounds } = potentialGrid;
-  const levels = [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8].map(
-    (level) => level * scale,
-  );
+  ensurePotentialContours();
 
   context.save();
   context.lineWidth = 1.05;
   context.setLineDash([4, 4]);
   context.strokeStyle = "rgba(255,255,255,.62)";
-
-  for (const level of levels) {
-    context.beginPath();
-    for (let row = 0; row < rows - 1; row += 1) {
-      for (let column = 0; column < columns - 1; column += 1) {
-        const index = row * columns + column;
-        const value0 = values[index];
-        const value1 = values[index + 1];
-        const value2 = values[index + 1 + columns];
-        const value3 = values[index + columns];
-        const worldX0 =
-          bounds.xmin +
-          (column / (columns - 1)) * (bounds.xmax - bounds.xmin);
-        const worldX1 =
-          bounds.xmin +
-          ((column + 1) / (columns - 1)) * (bounds.xmax - bounds.xmin);
-        const worldY0 =
-          bounds.ymax -
-          (row / (rows - 1)) * (bounds.ymax - bounds.ymin);
-        const worldY1 =
-          bounds.ymax -
-          ((row + 1) / (rows - 1)) * (bounds.ymax - bounds.ymin);
-        const x0 = screenX(worldX0);
-        const x1 = screenX(worldX1);
-        const y0 = screenY(worldY0);
-        const y1 = screenY(worldY1);
-        const points = [];
-
-        if ((value0 - level) * (value1 - level) < 0) {
-          points.push(interpolateEdge(x0, y0, value0, x1, y0, value1, level));
-        }
-        if ((value1 - level) * (value2 - level) < 0) {
-          points.push(interpolateEdge(x1, y0, value1, x1, y1, value2, level));
-        }
-        if ((value2 - level) * (value3 - level) < 0) {
-          points.push(interpolateEdge(x1, y1, value2, x0, y1, value3, level));
-        }
-        if ((value3 - level) * (value0 - level) < 0) {
-          points.push(interpolateEdge(x0, y1, value3, x0, y0, value0, level));
-        }
-
-        if (points.length === 2) {
-          context.moveTo(points[0].x, points[0].y);
-          context.lineTo(points[1].x, points[1].y);
-        } else if (points.length === 4) {
-          context.moveTo(points[0].x, points[0].y);
-          context.lineTo(points[1].x, points[1].y);
-          context.moveTo(points[2].x, points[2].y);
-          context.lineTo(points[3].x, points[3].y);
-        }
-      }
-    }
-    context.stroke();
+  context.beginPath();
+  for (const [from, to] of potentialGrid.contours) {
+    context.moveTo(screenX(from.x), screenY(from.y));
+    context.lineTo(screenX(to.x), screenY(to.y));
   }
+  context.stroke();
   context.restore();
 }
 
@@ -1014,14 +1036,10 @@ function updateParticles(realDeltaTime) {
 
 function maybeRecompute(now) {
   if (dirtySamples) rebuildSamples();
-  const navigationSettled =
-    !interaction || interaction.type !== "pan"
-      ? now - lastViewportChange > 55
-      : false;
-  if (dirtyVectors && navigationSettled) computeVectors();
+  if (dirtyVectors) computeVectors();
+  if (dirtyPotential) ensurePotentialGrid();
   if (now - lastHeavy > 80) {
     if (dirtyLines) computeFieldLines();
-    if (dirtyPotential && navigationSettled) computePotential();
     lastHeavy = now;
   }
 }
@@ -1194,6 +1212,7 @@ function drawMinimap() {
 }
 
 function render(now) {
+  syncViewportSize();
   const deltaTime = now - lastTime;
   lastTime = now;
   updateParticles(deltaTime);
@@ -1227,120 +1246,163 @@ function pointerPosition(event) {
 }
 
 function hitTest(pixelX, pixelY) {
-  for (let index = sources.length - 1; index >= 0; index -= 1) {
-    const source = sources[index];
-
-    if (source.type === "point") {
-      if (
-        Math.hypot(pixelX - screenX(source.x), pixelY - screenY(source.y)) < 18
-      ) {
-        return source;
-      }
-    } else if (source.type === "line") {
-      const cos = Math.cos(source.angle);
-      const sin = Math.sin(source.angle);
-      const halfLength = source.length / 2;
-      const startX = screenX(source.x - halfLength * cos);
-      const startY = screenY(source.y - halfLength * sin);
-      const endX = screenX(source.x + halfLength * cos);
-      const endY = screenY(source.y + halfLength * sin);
-      const segmentX = endX - startX;
-      const segmentY = endY - startY;
-      const pointerX = pixelX - startX;
-      const pointerY = pixelY - startY;
-      const factor = clamp(
-        (pointerX * segmentX + pointerY * segmentY) /
-          (segmentX * segmentX + segmentY * segmentY),
-        0,
-        1,
-      );
-
-      if (
-        Math.hypot(
-          pixelX - (startX + factor * segmentX),
-          pixelY - (startY + factor * segmentY),
-        ) < 12
-      ) {
-        return source;
-      }
-    } else {
-      const { x, y } = screenToWorld(pixelX, pixelY);
-      const cos = Math.cos(source.angle);
-      const sin = Math.sin(source.angle);
-      const localX = (x - source.x) * cos + (y - source.y) * sin;
-      const localY = -(x - source.x) * sin + (y - source.y) * cos;
-      if (
-        Math.abs(localX) <= source.width / 2 &&
-        Math.abs(localY) <= source.height / 2
-      ) {
-        return source;
-      }
-    }
-  }
-
-  return null;
+  return findSourceAtScreen(sources, pixelX, pixelY, {
+    worldToScreen,
+    zoom: camera.zoom,
+  });
 }
 
-canvas.addEventListener("pointerdown", (event) => {
-  canvas.setPointerCapture(event.pointerId);
-  const pointer = pointerPosition(event);
-  const { x, y } = screenToWorld(pointer.pixelX, pointer.pixelY);
-  const hit = hitTest(pointer.pixelX, pointer.pixelY);
-  const wantsPan =
-    event.button === 1 ||
-    (event.button === 0 && spacePressed) ||
-    (event.pointerType === "touch" && mode === "select" && !hit);
-
-  if (wantsPan) {
-    event.preventDefault();
-    interaction = {
-      type: "pan",
-      pointerId: event.pointerId,
-      lastPixelX: pointer.pixelX,
-      lastPixelY: pointer.pixelY,
-    };
-    canvas.classList.add("panning");
-    return;
-  }
-
-  const insideWorld =
+function isInsideWorld(x, y) {
+  return (
     x >= WORLD_BOUNDS.xmin &&
     x <= WORLD_BOUNDS.xmax &&
     y >= WORLD_BOUNDS.ymin &&
-    y <= WORLD_BOUNDS.ymax;
+    y <= WORLD_BOUNDS.ymax
+  );
+}
 
-  if (mode === "select") {
-    selectedId = hit ? hit.id : null;
-    updateControls();
-    if (hit) {
-      interaction = {
-        type: "source",
-        pointerId: event.pointerId,
-        id: hit.id,
-        dx: x - hit.x,
-        dy: y - hit.y,
-      };
-    }
-  } else if (mode === "plus" && insideWorld) {
+const placementToolLabels = {
+  plus: "Carga positiva",
+  minus: "Carga negativa",
+  line: "Distribución lineal",
+  plane: "Distribución superficial",
+  particle: "Partícula de prueba",
+};
+
+function setPlacementTool(tool) {
+  activePlacementTool = tool;
+  document.querySelectorAll("[data-placement-tool]").forEach((button) => {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.placementTool === activePlacementTool),
+    );
+  });
+  canvas.classList.toggle("placement-active", activePlacementTool !== null);
+  placementStatus.classList.toggle("active", activePlacementTool !== null);
+  placementStatus.textContent = activePlacementTool
+    ? `${placementToolLabels[activePlacementTool]} activa · clic derecho para colocar · Esc para cancelar.`
+    : "Selecciona un elemento y colócalo con clic derecho.";
+}
+
+function placeActiveTool(pixelX, pixelY) {
+  if (!activePlacementTool) return;
+
+  const { x, y } = screenToWorld(pixelX, pixelY);
+  if (!isInsideWorld(x, y)) return;
+
+  if (activePlacementTool === "plus") {
     addPoint(x, y, 2);
-  } else if (mode === "minus" && insideWorld) {
+  } else if (activePlacementTool === "minus") {
     addPoint(x, y, -2);
-  } else if (mode === "line" && insideWorld) {
+  } else if (activePlacementTool === "line") {
     addLine(x, y, 4);
-  } else if (mode === "plane" && insideWorld) {
+  } else if (activePlacementTool === "plane") {
     addPlane(x, y, 4);
-  } else if (mode === "particle" && insideWorld) {
+  } else if (activePlacementTool === "particle") {
     particles.push({ x, y, vx: 0, vy: 0, trail: [{ x, y }] });
-  } else if (mode === "delete" && hit) {
-    sources = sources.filter((source) => source.id !== hit.id);
-    if (selectedId === hit.id) selectedId = null;
-    markGeometryDirty();
-    updateControls();
   }
+}
+
+function moveInteractionSource(pointer) {
+  if (interaction?.type !== "source-drag") return;
+  const source = sources.find(
+    (candidate) => candidate.id === interaction.sourceId,
+  );
+  if (!source) return;
+
+  const position = sourcePositionFromPointer(
+    pointer.pixelX,
+    pointer.pixelY,
+    {
+      offsetX: interaction.sourceOffsetX,
+      offsetY: interaction.sourceOffsetY,
+      screenToWorld,
+    },
+  );
+  source.x = position.x;
+  source.y = position.y;
+  constrainSource(source);
+  markGeometryDirty();
+  syncControlValues(source);
+  hud.textContent = `Objeto en (${formatNumber(source.x, 2)}, ${formatNumber(source.y, 2)}) m`;
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (interaction) return;
+
+  const interactionType = getPointerInteractionType(event);
+  if (!interactionType) return;
+
+  event.preventDefault();
+  canvas.setPointerCapture(event.pointerId);
+  const pointer = pointerPosition(event);
+  const source =
+    interactionType === "selection-pending"
+      ? hitTest(pointer.pixelX, pointer.pixelY)
+      : null;
+  const worldPosition = source
+    ? screenToWorld(pointer.pixelX, pointer.pixelY)
+    : null;
+  interaction = {
+    type: interactionType,
+    pointerId: event.pointerId,
+    startPixelX: pointer.pixelX,
+    startPixelY: pointer.pixelY,
+    lastPixelX: pointer.pixelX,
+    lastPixelY: pointer.pixelY,
+    sourceId: source?.id ?? null,
+    sourceOffsetX: source ? worldPosition.x - source.x : 0,
+    sourceOffsetY: source ? worldPosition.y - source.y : 0,
+  };
 });
 
 canvas.addEventListener("pointermove", (event) => {
   const pointer = pointerPosition(event);
+  if (
+    interaction?.pointerId === event.pointerId &&
+    interaction.type === "selection-pending" &&
+    exceedsDragThreshold(
+      interaction.startPixelX,
+      interaction.startPixelY,
+      pointer.pixelX,
+      pointer.pixelY,
+    )
+  ) {
+    if (interaction.sourceId !== null) {
+      interaction.type = "source-drag";
+      selectedId = interaction.sourceId;
+      canvas.classList.add("moving-source");
+      updateControls();
+      moveInteractionSource(pointer);
+    } else {
+      interaction.type = "selection-cancelled";
+    }
+    return;
+  }
+
+  if (
+    interaction?.pointerId === event.pointerId &&
+    interaction.type === "pan-pending" &&
+    exceedsDragThreshold(
+      interaction.startPixelX,
+      interaction.startPixelY,
+      pointer.pixelX,
+      pointer.pixelY,
+    )
+  ) {
+    interaction.type = "pan";
+    canvas.classList.add("panning");
+    camera.panByPixels(
+      pointer.pixelX - interaction.startPixelX,
+      pointer.pixelY - interaction.startPixelY,
+    );
+    interaction.lastPixelX = pointer.pixelX;
+    interaction.lastPixelY = pointer.pixelY;
+    markViewportDirty();
+    hud.textContent = `Vista centrada en (${formatNumber(camera.x, 2)}, ${formatNumber(camera.y, 2)}) m`;
+    return;
+  }
+
   if (
     interaction?.type === "pan" &&
     interaction.pointerId === event.pointerId
@@ -1353,6 +1415,14 @@ canvas.addEventListener("pointermove", (event) => {
     interaction.lastPixelY = pointer.pixelY;
     markViewportDirty();
     hud.textContent = `Vista centrada en (${formatNumber(camera.x, 2)}, ${formatNumber(camera.y, 2)}) m`;
+    return;
+  }
+
+  if (
+    interaction?.type === "source-drag" &&
+    interaction.pointerId === event.pointerId
+  ) {
+    moveInteractionSource(pointer);
     return;
   }
 
@@ -1374,38 +1444,56 @@ canvas.addEventListener("pointermove", (event) => {
     " &nbsp; | &nbsp; <b>V=" +
     potential.toExponential(3) +
     " V</b>";
-
-  if (
-    interaction?.type === "source" &&
-    interaction.pointerId === event.pointerId
-  ) {
-    const source = sources.find(
-      (candidate) => candidate.id === interaction.id,
-    );
-    if (source) {
-      source.x = x - interaction.dx;
-      source.y = y - interaction.dy;
-      constrainSource(source);
-      markGeometryDirty();
-      syncControlValues(source);
-    }
-  }
 });
 
-function endPointerInteraction(event) {
-  if (interaction && interaction.pointerId === event.pointerId) {
-    interaction = null;
-    canvas.classList.remove("panning");
-    updatePanCursor();
+function clearPointerInteraction() {
+  const completedSourceDrag = interaction?.type === "source-drag";
+  if (
+    interaction &&
+    canvas.hasPointerCapture?.(interaction.pointerId)
+  ) {
+    canvas.releasePointerCapture(interaction.pointerId);
   }
+  interaction = null;
+  canvas.classList.remove("panning");
+  canvas.classList.remove("moving-source");
+  if (completedSourceDrag) dirtyPotential = true;
 }
 
-canvas.addEventListener("pointerup", endPointerInteraction);
-canvas.addEventListener("pointercancel", endPointerInteraction);
+canvas.addEventListener("pointerup", (event) => {
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+
+  const pointer = pointerPosition(event);
+  if (
+    interaction.type === "selection-pending" &&
+    !exceedsDragThreshold(
+      interaction.startPixelX,
+      interaction.startPixelY,
+      pointer.pixelX,
+      pointer.pixelY,
+    )
+  ) {
+    const hit = hitTest(pointer.pixelX, pointer.pixelY);
+    selectedId = hit?.id ?? null;
+    updateControls();
+  }
+
+  clearPointerInteraction();
+});
+canvas.addEventListener("pointercancel", clearPointerInteraction);
+canvas.addEventListener("lostpointercapture", () => {
+  if (interaction) clearPointerInteraction();
+});
 canvas.addEventListener("mouseleave", () => {
   if (!interaction) {
     hud.innerHTML = "Mueve el cursor para medir <b>E</b> y <b>V</b>.";
   }
+});
+
+canvas.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  const pointer = pointerPosition(event);
+  placeActiveTool(pointer.pixelX, pointer.pixelY);
 });
 
 canvas.addEventListener(
@@ -1425,13 +1513,6 @@ canvas.addEventListener(
   },
   { passive: false },
 );
-
-function updatePanCursor() {
-  canvas.classList.toggle(
-    "pan-ready",
-    spacePressed && interaction?.type !== "pan",
-  );
-}
 
 function resetCamera() {
   camera.reset();
@@ -1489,12 +1570,12 @@ minimap.addEventListener("pointercancel", () => {
   minimapDragging = false;
 });
 
-document.querySelectorAll(".mode").forEach((button) => {
+document.querySelectorAll("[data-placement-tool]").forEach((button) => {
   button.addEventListener("click", () => {
-    mode = button.dataset.mode;
-    document.querySelectorAll(".mode").forEach((candidate) => {
-      candidate.classList.toggle("active", candidate === button);
-    });
+    const requestedTool = button.dataset.placementTool;
+    setPlacementTool(
+      requestedTool === activePlacementTool ? null : requestedTool,
+    );
   });
 });
 
@@ -1520,53 +1601,68 @@ function sliderRow(label, property, min, max, step, value, formatValue) {
   );
 }
 
+function pointChargeControl(source) {
+  const chargeNanocoulombs = source.q / 1e-9;
+  return (
+    '<div class="propertyGroup chargeProperty">' +
+    '<div class="propertyHeader"><span>Carga q</span><strong data-val="qNC">' +
+    formatPointChargeNanocoulombs(chargeNanocoulombs) +
+    "</strong></div>" +
+    '<input class="chargeSlider" type="range" data-prop="qNC" min="' +
+    MIN_POINT_CHARGE_NC +
+    '" max="' +
+    MAX_POINT_CHARGE_NC +
+    '" step="0.1" value="' +
+    chargeNanocoulombs +
+    '" aria-label="Carga en nanocoulombs">' +
+    '<div class="rangeTicks" aria-hidden="true"><span>−10</span><span>−5</span><span>0</span><span>5</span><span>10</span></div>' +
+    '<div class="numericEntry"><label>q</label><input type="number" data-prop="qNC" min="' +
+    MIN_POINT_CHARGE_NC +
+    '" max="' +
+    MAX_POINT_CHARGE_NC +
+    '" step="0.1" value="' +
+    chargeNanocoulombs +
+    '"><span>nC</span></div></div>'
+  );
+}
+
+function positionReadout(source) {
+  return (
+    '<div class="propertyGroup positionProperty">' +
+    '<div class="propertyHeading">Posición</div>' +
+    '<div class="coordinateReadout"><span>x</span><output data-position="x">' +
+    source.x.toFixed(3) +
+    ' m</output><span>y</span><output data-position="y">' +
+    source.y.toFixed(3) +
+    " m</output></div>" +
+    '<div class="directManipulationHint"><span class="kbd">Ctrl + arrastrar</span> para mover</div></div>'
+  );
+}
+
+function sourceTypeName(source) {
+  if (source.type === "point") {
+    const sign = source.q > 0 ? "positiva" : source.q < 0 ? "negativa" : "neutra";
+    return `Carga puntual ${sign}`;
+  }
+  return source.type === "line"
+    ? "Distribución lineal"
+    : "Distribución plana";
+}
+
 function updateControls() {
   const source = sources.find((candidate) => candidate.id === selectedId);
   if (!source) {
-    selectedType.textContent = "Ninguno";
+    selectedType.textContent = "Sin selección";
     sourceControls.innerHTML =
-      '<div class="small">Selecciona una carga o distribución para editar sus parámetros.</div>';
+      '<div class="small emptyInspector">Usa <span class="kbd">Ctrl + clic</span> sobre un objeto para editarlo.</div>';
     return;
   }
 
-  const typeName =
-    source.type === "point"
-      ? "Carga puntual"
-      : source.type === "line"
-        ? "Distribución lineal"
-        : "Distribución plana";
-  selectedType.textContent = typeName + " #" + source.id;
+  selectedType.textContent = sourceTypeName(source) + " #" + source.id;
 
   let html = "";
-  html += sliderRow(
-    "x",
-    "x",
-    WORLD_BOUNDS.xmin,
-    WORLD_BOUNDS.xmax,
-    0.01,
-    source.x,
-    (value) => Number(value).toFixed(2) + " m",
-  );
-  html += sliderRow(
-    "y",
-    "y",
-    WORLD_BOUNDS.ymin,
-    WORLD_BOUNDS.ymax,
-    0.01,
-    source.y,
-    (value) => Number(value).toFixed(2) + " m",
-  );
-
   if (source.type === "point") {
-    html += sliderRow(
-      "q",
-      "qNC",
-      -10,
-      10,
-      0.1,
-      source.q / 1e-9,
-      (value) => Number(value).toFixed(1) + " nC",
-    );
+    html += pointChargeControl(source);
   } else if (source.type === "line") {
     html += sliderRow(
       "λ",
@@ -1634,24 +1730,60 @@ function updateControls() {
     );
   }
 
+  html += positionReadout(source);
   html +=
     '<div class="row"><button id="deleteSelected" class="danger">Eliminar seleccionado</button></div>';
   sourceControls.innerHTML = html;
 
-  sourceControls.querySelectorAll("input[data-prop]").forEach((input) => {
-    input.addEventListener("input", () => {
-      const property = input.dataset.prop;
-      const value = Number(input.value);
-      if (property === "qNC") source.q = value * 1e-9;
-      else if (property === "lambdaNCm") source.lambda = value * 1e-9;
-      else if (property === "sigmaNCm2") source.sigma = value * 1e-9;
-      else if (property === "angleDeg") source.angle = (value * Math.PI) / 180;
-      else source[property] = value;
-      constrainSource(source);
-      markGeometryDirty();
-      syncControlValues(source);
+  const applyInspectorValue = (input) => {
+    const property = input.dataset.prop;
+    let value = Number(input.value);
+    if (property === "qNC") {
+      value =
+        input.type === "range"
+          ? snapPointChargeSliderNanocoulombs(value)
+          : normalizePointChargeNanocoulombs(value);
+      if (value === null) {
+        syncControlValues(source);
+        return;
+      }
+      source.q = value * 1e-9;
+    } else if (property === "lambdaNCm") {
+      source.lambda = value * 1e-9;
+    } else if (property === "sigmaNCm2") {
+      source.sigma = value * 1e-9;
+    } else if (property === "angleDeg") {
+      source.angle = (value * Math.PI) / 180;
+    } else {
+      source[property] = value;
+    }
+    constrainSource(source);
+    markGeometryDirty();
+    syncControlValues(source);
+  };
+
+  sourceControls
+    .querySelectorAll('input[type="range"][data-prop]')
+    .forEach((input) => {
+      input.addEventListener("pointerdown", () => {
+        inspectorAdjustmentActive = true;
+      });
+      input.addEventListener("input", () => {
+        applyInspectorValue(input);
+      });
+      input.addEventListener("change", () => {
+        inspectorAdjustmentActive = false;
+        dirtyPotential = true;
+      });
     });
-  });
+  sourceControls
+    .querySelectorAll('input[type="number"][data-prop]')
+    .forEach((input) => {
+      input.addEventListener("change", () => applyInspectorValue(input));
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") input.blur();
+      });
+    });
 
   document.getElementById("deleteSelected").addEventListener("click", () => {
     sources = sources.filter((candidate) => candidate.id !== selectedId);
@@ -1663,21 +1795,30 @@ function updateControls() {
 
 function syncControlValues(source) {
   const setControl = (property, value, text) => {
-    const input = sourceControls.querySelector(
+    const inputs = sourceControls.querySelectorAll(
       'input[data-prop="' + property + '"]',
     );
     const output = sourceControls.querySelector(
       '[data-val="' + property + '"]',
     );
-    if (input) input.value = value;
+    inputs.forEach((input) => {
+      input.value = value;
+    });
     if (output) output.textContent = text;
   };
 
-  setControl("x", source.x, source.x.toFixed(2) + " m");
-  setControl("y", source.y, source.y.toFixed(2) + " m");
+  const positionX = sourceControls.querySelector('[data-position="x"]');
+  const positionY = sourceControls.querySelector('[data-position="y"]');
+  if (positionX) positionX.textContent = source.x.toFixed(3) + " m";
+  if (positionY) positionY.textContent = source.y.toFixed(3) + " m";
+  selectedType.textContent = sourceTypeName(source) + " #" + source.id;
 
   if (source.type === "point") {
-    setControl("qNC", source.q / 1e-9, (source.q / 1e-9).toFixed(1) + " nC");
+    setControl(
+      "qNC",
+      source.q / 1e-9,
+      formatPointChargeNanocoulombs(source.q / 1e-9),
+    );
   }
   if (source.type === "line") {
     setControl(
@@ -1790,18 +1931,14 @@ ui.timeScale.addEventListener("input", () => {
 });
 
 window.addEventListener("keydown", (event) => {
-  if (
-    event.code === "Space" &&
-    !event.target.matches("input, textarea, select, button")
-  ) {
+  if (event.key === "Escape" && activePlacementTool !== null) {
     event.preventDefault();
-    spacePressed = true;
-    updatePanCursor();
+    setPlacementTool(null);
   }
   if (
     (event.key === "Delete" || event.key === "Backspace") &&
     selectedId !== null &&
-    !event.target.matches("input, textarea")
+    !event.target.matches("input, textarea, select, button")
   ) {
     sources = sources.filter((source) => source.id !== selectedId);
     selectedId = null;
@@ -1810,21 +1947,22 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-window.addEventListener("keyup", (event) => {
-  if (event.code === "Space") {
-    spacePressed = false;
-    updatePanCursor();
+window.addEventListener("pointerup", () => {
+  if (inspectorAdjustmentActive) {
+    inspectorAdjustmentActive = false;
+    dirtyPotential = true;
   }
 });
 
 window.addEventListener("blur", () => {
-  spacePressed = false;
-  interaction = null;
-  canvas.classList.remove("panning");
-  updatePanCursor();
+  if (inspectorAdjustmentActive) dirtyPotential = true;
+  inspectorAdjustmentActive = false;
+  clearPointerInteraction();
 });
 
-new ResizeObserver(resize).observe(stage);
+new ResizeObserver(scheduleViewportResize).observe(stage);
+window.addEventListener("resize", scheduleViewportResize);
 loadPreset("dipole");
-resize();
+setPlacementTool(null);
+scheduleViewportResize();
 requestAnimationFrame(render);

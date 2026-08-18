@@ -79,13 +79,31 @@ button.danger {
   letter-spacing: 0.2px;
 }
 
+.controlHint {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.controlHint span {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.controlHint b {
+  font-weight: 650;
+  color: #dce5f5;
+}
+
 .spacer {
   flex: 1;
 }
 
 .main {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   min-height: 0;
 }
 
@@ -100,16 +118,20 @@ button.danger {
   display: block;
   width: 100%;
   height: 100%;
-  cursor: crosshair;
+  cursor: grab;
   touch-action: none;
 }
 
-#fieldCanvas.pan-ready {
-  cursor: grab;
+#fieldCanvas.placement-active {
+  cursor: cell;
 }
 
 #fieldCanvas.panning {
   cursor: grabbing;
+}
+
+#fieldCanvas.moving-source {
+  cursor: move;
 }
 
 .navigationControls {
@@ -202,7 +224,187 @@ button.danger {
 
 .card h3 {
   margin: 0 0 9px;
+  font-size: 12px;
+  font-weight: 750;
+  color: #dce5f5;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.toolPalette {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.placementTool {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 7px;
+  align-items: center;
+  min-height: 42px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #dce5f5;
+  text-align: left;
+}
+
+.placementTool[aria-pressed='true'] {
+  background: #17334b;
+  border-color: #4ba4c9;
+  box-shadow: 0 0 0 1px rgb(125 211 252 / 20%);
+}
+
+.placementTool:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.particleTool {
+  grid-column: 1 / -1;
+}
+
+.toolIcon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  background: #202d47;
+  border: 1px solid #3a4a69;
+  border-radius: 8px;
+}
+
+.toolIcon.positive {
+  color: var(--pos);
+}
+
+.toolIcon.negative {
+  color: var(--neg);
+}
+
+.toolIcon.line,
+.toolIcon.plane {
+  color: #dbeafe;
+}
+
+.toolIcon.particle {
+  color: #fde68a;
+}
+
+.toolStatus {
+  min-height: 31px;
+  padding: 7px 8px 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.toolStatus.active {
+  color: #b9ecff;
+}
+
+.emptyInspector {
+  padding: 4px 0 2px;
+}
+
+.propertyGroup {
+  padding: 10px;
+  margin: 9px 0;
+  background: rgb(10 18 32 / 46%);
+  border: 1px solid rgb(58 74 105 / 72%);
+  border-radius: 10px;
+}
+
+.propertyHeader {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 9px;
+  font-size: 12px;
+  color: #d5def0;
+}
+
+.propertyHeader strong {
   font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.chargeSlider {
+  width: 100%;
+  margin: 2px 0 0;
+}
+
+.rangeTicks {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 2px 0;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: #7183a0;
+}
+
+.numericEntry {
+  display: grid;
+  grid-template-columns: auto 76px auto;
+  gap: 7px;
+  align-items: center;
+  justify-content: end;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.numericEntry input {
+  width: 76px;
+  padding: 5px 7px;
+  color: #fff;
+  text-align: right;
+  background: #0f192a;
+  border: 1px solid #3a4a69;
+  border-radius: 7px;
+}
+
+.numericEntry input:focus {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+}
+
+.propertyHeading {
+  margin-bottom: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #cbd7ec;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.coordinateReadout {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 4px 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.coordinateReadout output {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: #e8eefb;
+}
+
+.directManipulationHint {
+  padding-top: 9px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid rgb(58 74 105 / 55%);
 }
 
 .small {
@@ -254,6 +456,7 @@ button.danger {
 .sourceType {
   margin-bottom: 8px;
   font-size: 13px;
+  font-weight: 650;
   color: #dce5f5;
 }
 
@@ -323,7 +526,18 @@ button.danger {
   }
 }
 
+@media (max-width: 1120px) {
+  .controlHint span:nth-child(4),
+  .controlHint span:nth-child(5) {
+    display: none;
+  }
+}
+
 @media (max-width: 620px) {
+  .controlHint {
+    display: none;
+  }
+
   .navigationControls {
     top: 8px;
     left: 8px;

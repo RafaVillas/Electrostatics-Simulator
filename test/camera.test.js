@@ -127,3 +127,16 @@ test("resizing changes the visible area without changing camera scale", () => {
     state,
   );
 });
+
+test("screen-to-world placement remains exact after panning and zooming", () => {
+  const camera = makeCamera();
+  camera.panByPixels(130, -75);
+  camera.zoomAt(240, 190, 185);
+  const cursor = { x: 635, y: 412 };
+
+  const placement = camera.screenToWorld(cursor.x, cursor.y);
+  const restoredCursor = camera.worldToScreen(placement.x, placement.y);
+
+  assertClose(restoredCursor.x, cursor.x);
+  assertClose(restoredCursor.y, cursor.y);
+});
