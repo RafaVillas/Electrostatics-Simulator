@@ -15,31 +15,140 @@
     <div class="app">
       <header class="topbar">
         <div class="title">⚡ Campo Eléctrico 2D</div>
-        <button data-mode="select" class="mode active">
-          Seleccionar / mover
-        </button>
-        <button data-mode="plus" class="mode">+ Carga</button>
-        <button data-mode="minus" class="mode">− Carga</button>
-        <button data-mode="line" class="mode">Distribución lineal</button>
-        <button data-mode="plane" class="mode">Distribución plana</button>
-        <button data-mode="particle" class="mode">Partícula de prueba</button>
-        <button data-mode="delete" class="mode danger">Eliminar</button>
+        <div class="controlHint" aria-label="Controles principales">
+          <span><b>Arrastrar</b> mover</span>
+          <span><b>Ctrl + clic</b> seleccionar</span>
+          <span><b>Clic derecho</b> colocar</span>
+          <span><b>Rueda</b> zoom</span>
+          <span><b>Esc</b> cancelar</span>
+        </div>
         <div class="spacer"></div>
-        <button id="pauseBtn">⏸ Pausar partículas</button>
         <button id="resetBtn">Reiniciar</button>
       </header>
 
       <main class="main">
         <div class="stage" id="stage">
           <canvas id="fieldCanvas"></canvas>
+          <div class="navigationControls" aria-label="Controles de navegación">
+            <button
+              id="homeView"
+              type="button"
+              title="Volver al origen"
+              aria-label="Volver al origen"
+            >
+              ⌂
+            </button>
+            <button
+              id="fitView"
+              type="button"
+              title="Encuadrar todas las fuentes"
+            >
+              Encuadrar
+            </button>
+            <button
+              id="zoomOut"
+              type="button"
+              title="Alejar"
+              aria-label="Alejar"
+            >
+              −
+            </button>
+            <span id="zoomLevel" aria-live="polite">100%</span>
+            <button
+              id="zoomIn"
+              type="button"
+              title="Acercar"
+              aria-label="Acercar"
+            >
+              +
+            </button>
+          </div>
+          <canvas
+            id="minimap"
+            class="minimap"
+            width="160"
+            height="112"
+            aria-label="Minimapa del mundo; arrastra para mover la cámara"
+            title="Arrastra para mover la cámara"
+          ></canvas>
           <div class="hud" id="hud">
             Mueve el cursor para medir <b>E</b> y <b>V</b>.
           </div>
         </div>
 
         <aside class="sidebar">
+          <section class="card toolCard">
+            <h3>Elementos</h3>
+            <div class="toolPalette" role="toolbar" aria-label="Elemento a colocar">
+              <button
+                class="placementTool"
+                type="button"
+                data-placement-tool="plus"
+                aria-pressed="false"
+                title="Colocar carga positiva"
+              >
+                <span class="toolIcon positive">+</span>
+                <span>Carga +</span>
+              </button>
+              <button
+                class="placementTool"
+                type="button"
+                data-placement-tool="minus"
+                aria-pressed="false"
+                title="Colocar carga negativa"
+              >
+                <span class="toolIcon negative">−</span>
+                <span>Carga −</span>
+              </button>
+              <button
+                class="placementTool"
+                type="button"
+                data-placement-tool="line"
+                aria-pressed="false"
+                title="Colocar distribución lineal"
+              >
+                <span class="toolIcon line">━</span>
+                <span>Línea</span>
+              </button>
+              <button
+                class="placementTool"
+                type="button"
+                data-placement-tool="plane"
+                aria-pressed="false"
+                title="Colocar distribución superficial"
+              >
+                <span class="toolIcon plane">▭</span>
+                <span>Plano</span>
+              </button>
+              <button
+                class="placementTool particleTool"
+                type="button"
+                data-placement-tool="particle"
+                aria-pressed="false"
+                title="Colocar partícula de prueba"
+              >
+                <span class="toolIcon particle">•</span>
+                <span>Partícula de prueba</span>
+              </button>
+            </div>
+            <div class="toolStatus" id="placementStatus" aria-live="polite">
+              Selecciona un elemento y colócalo con clic derecho.
+            </div>
+          </section>
+
+          <section class="card inspectorCard">
+            <h3>Propiedades</h3>
+            <div class="sourceType" id="selectedType">Sin selección</div>
+            <div id="sourceControls">
+              <div class="small emptyInspector">
+                Usa <span class="kbd">Ctrl + clic</span> sobre un objeto para
+                editarlo.
+              </div>
+            </div>
+          </section>
+
           <section class="card">
-            <h3>Visualización</h3>
+            <h3>Campo</h3>
             <div class="checks">
               <label class="check"
                 ><input id="showVectors" type="checkbox" checked /> Vectores
@@ -89,16 +198,6 @@
           </section>
 
           <section class="card">
-            <h3>Objeto seleccionado</h3>
-            <div class="sourceType" id="selectedType">Ninguno</div>
-            <div id="sourceControls">
-              <div class="small">
-                Selecciona una carga o distribución para editar sus parámetros.
-              </div>
-            </div>
-          </section>
-
-          <section class="card">
             <h3>Partículas de prueba</h3>
             <div class="row">
               <label>q/m</label>
@@ -125,6 +224,7 @@
               <span class="val" id="timeScaleVal">1.0×</span>
             </div>
             <div class="row">
+              <button id="pauseBtn">⏸ Pausar partículas</button>
               <button id="clearParticles">Borrar partículas</button>
             </div>
             <div class="small">
@@ -159,18 +259,6 @@
               dentro del plano de visualización (corte 2D). Se enmascara una
               vecindad muy pequeña alrededor de cada elemento para evitar la
               singularidad numérica en r = 0.
-            </div>
-          </section>
-
-          <section class="card">
-            <h3>Atajos y uso</h3>
-            <div class="small">
-              Arrastra cualquier fuente para moverla. Usa los deslizadores para
-              cambiar posición y magnitud.
-              <span class="kbd">Supr</span> elimina el objeto seleccionado. El
-              mapa de potencial usa escala automática robusta; por eso los
-              colores muestran estructura y signo, no una escala fija entre
-              configuraciones.
             </div>
           </section>
 
